@@ -1,0 +1,70 @@
+{
+  "type": "object",
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "branch": { "type": "string" },
+          "user_prompt": { "type": "string" },
+          "domain": { "type": "string", "enum": ["游戏、图形与多媒体"] },
+          "subdomain": { "type": "string", "enum": ["音视频处理", "图形渲染", "其他"] },
+          "task_type": { "type": "string", "enum": ["功能开发"] },
+          "difficulty": { "type": "string", "enum": ["困难", "地狱"] },
+          "lang_framework": { "type": "string" },
+          "acceptance_points": { "type": "array", "items": { "type": "string" } },
+          "materials": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string" },
+                "purpose": { "type": "string" },
+                "source": { "type": "string", "enum": ["url", "script", "manual"] },
+                "url": { "type": "string" },
+                "script": { "type": "string" },
+                "license": { "type": "string" },
+                "size_mb": { "type": "number" }
+              },
+              "required": ["path", "purpose", "source", "url", "script", "license", "size_mb"],
+              "additionalProperties": false
+            }
+          },
+          "env_requirements": {
+            "type": "object",
+            "properties": {
+              "toolchain": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "check_command": { "type": "string" },
+                    "min_version": { "type": "string" },
+                    "install_hint": { "type": "string" }
+                  },
+                  "required": ["name", "check_command", "min_version", "install_hint"],
+                  "additionalProperties": false
+                }
+              },
+              "needs_gpu": { "type": "boolean" },
+              "gpu_note": { "type": "string" },
+              "external_urls": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["toolchain", "needs_gpu", "gpu_note", "external_urls"],
+            "additionalProperties": false
+          },
+          "remark": { "type": "string" },
+          "similarity_note": { "type": "string" }
+        },
+        "required": ["branch", "user_prompt", "domain", "subdomain", "task_type", "difficulty",
+                     "lang_framework", "acceptance_points", "materials", "env_requirements",
+                     "remark", "similarity_note"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["tasks"],
+  "additionalProperties": false
+}

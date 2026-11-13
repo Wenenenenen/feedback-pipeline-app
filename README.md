@@ -1,14 +1,14 @@
 # 出题评测流水线
 
-「CC/Codex 用户反馈标注」作业的出题、做题管理、收集、验收、导出流水线。设计见 `docs/2026-11-12-qa-pipeline-design.md`（WSL 中 `~/jianzhi/feedback-pipeline/docs/`）。
+「CC/Codex 用户反馈标注」作业的出题、做题管理、收集、验收、提交表流水线。设计见 `docs/2026-11-12-qa-pipeline-design.md`（WSL 中 `~/jianzhi/feedback-pipeline/docs/`）。
 
 ## 目录
 
 | 位置 | 内容 |
 |---|---|
-| `E:\WorkSpace\jianzhi\feedback-pipeline-app\` | 后端源码、页面、测试、脚本（本目录） |
-| `E:\WorkSpace\jianzhi\feedback-pipeline-agent\` | Codex 工作区：AGENTS.md、style.md、skills、schemas、每次运行的输入输出 |
-| WSL `~/jianzhi/feedback-pipeline/` | 运行时：`.venv/`、`data/`（数据库、日志、轨迹、导出、备份）、`templates/`、`docs/` |
+| `E:\WorkSpace\jianzhi\feedback-pipeline-app\` | 本仓库：`app/` 后端与页面、`tests/`、`scripts/` |
+| `E:\WorkSpace\jianzhi\feedback-pipeline-app\agent\` | Codex 工作区：AGENTS.md、style.md、banned-topics.md、`.agents/skills/`、`schemas/`；`runs/` 为每次运行的输入输出，不进仓库 |
+| WSL `~/jianzhi/feedback-pipeline/` | 运行时：`.venv/`、`data/`（数据库、日志、轨迹、备份）、`docs/` |
 | WSL `~/jianzhi/feedback-tasks/<分支名>/` | 做题目录 |
 | WSL `~/jianzhi/feedback-verify/<分支名>/` | 验收克隆 |
 | WSL `~/jianzhi/feedback-record/<分支名>/` | 录屏克隆 |

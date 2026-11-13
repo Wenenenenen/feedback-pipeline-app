@@ -9,6 +9,17 @@ from pathlib import Path
 DATA_DIR = Path(os.environ.get('PIPELINE_DATA', '~/jianzhi/feedback-pipeline/data')).expanduser()
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = DATA_DIR / 'config.json'
+# Codex 工作区随仓库一起放在 agent/ 子目录
+AGENT_DIR = APP_DIR.parent / 'agent'
+
+
+def win_path(p) -> str:
+    """WSL 挂载路径转换为 Windows 路径，如 /mnt/e/a/b.mp4 → E:\\a\\b.mp4；其他路径原样返回。"""
+    parts = Path(p).parts
+    if len(parts) >= 3 and parts[1] == 'mnt' and len(parts[2]) == 1:
+        return parts[2].upper() + ':\\' + '\\'.join(parts[3:])
+    return str(p)
+
 
 # Claude Code 2.1.322 自带的 skill（来自干净做题轨迹的 skill_listing）
 BUILTIN_SKILLS = [
@@ -25,9 +36,9 @@ DEFAULTS = {
     # Windows 版 codex 可执行文件（WSL 路径）
     'codex_path': '/mnt/e/nodejs/npm-global/node_modules/@openai/codex/node_modules/'
                   '@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe',
-    # Codex 工作区（Windows 路径与 WSL 路径）
-    'agent_workspace_win': 'E:\\WorkSpace\\jianzhi\\feedback-pipeline-agent',
-    'agent_workspace_wsl': '/mnt/e/WorkSpace/jianzhi/feedback-pipeline-agent',
+    # Codex 工作区（Windows 路径与 WSL 路径），默认为仓库内的 agent/
+    'agent_workspace_win': win_path(AGENT_DIR),
+    'agent_workspace_wsl': str(AGENT_DIR),
     'model': 'gpt-6.1-sol',
     'reasoning_effort': 'xhigh',
     'wsl_distro': 'Ubuntu-24.04',

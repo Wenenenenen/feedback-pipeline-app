@@ -7,6 +7,9 @@ __pycache__/
 .venv/
 venv/
 
+# Codex 每次运行的输入、结果与草稿
+agent/runs/
+
 # 运行数据不进仓库（数据库、日志、轨迹副本都在 WSL ~/jianzhi/feedback-pipeline/data）
 data/
 *.db

@@ -1,0 +1,53 @@
+{
+  "type": "object",
+  "properties": {
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "phenomenon": { "type": "string" },
+          "command": { "type": "string" },
+          "output_excerpt": { "type": "string" },
+          "recordable": { "type": "boolean" },
+          "needs_recording_confirm": { "type": "boolean" }
+        },
+        "required": ["phenomenon", "command", "output_excerpt", "recordable", "needs_recording_confirm"],
+        "additionalProperties": false
+      }
+    },
+    "delivery_score": { "type": "integer", "enum": [1, 2, 3, 4, 5] },
+    "score_reason": { "type": "string" },
+    "feedback": { "type": "string" },
+    "record_steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string" },
+          "command": { "type": "string" },
+          "expect": { "type": "string" }
+        },
+        "required": ["action", "command", "expect"],
+        "additionalProperties": false
+      }
+    },
+    "reproducibility": { "type": "string", "enum": ["无外部依赖", "有外部依赖，未容器化", "已容器化，可一键起环境"] },
+    "remark": { "type": "string" },
+    "self_check": {
+      "type": "object",
+      "properties": {
+        "has_process": { "type": "boolean" },
+        "has_product": { "type": "boolean" },
+        "has_code_anchor": { "type": "boolean" },
+        "score_consistent": { "type": "boolean" },
+        "note": { "type": "string" }
+      },
+      "required": ["has_process", "has_product", "has_code_anchor", "score_consistent", "note"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["evidence", "delivery_score", "score_reason", "feedback", "record_steps",
+               "reproducibility", "remark", "self_check"],
+  "additionalProperties": false
+}

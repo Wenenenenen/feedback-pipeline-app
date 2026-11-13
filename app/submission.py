@@ -38,12 +38,8 @@ def row(t: dict) -> list[dict]:
 
 # ---------- 录屏文件 ----------
 
-def win_path(p: Path) -> str:
-    """WSL 挂载路径转换为 Windows 路径，如 /mnt/e/a/b.mp4 → E:\\a\\b.mp4。"""
-    parts = Path(p).parts
-    if len(parts) >= 3 and parts[1] == 'mnt' and len(parts[2]) == 1:
-        return parts[2].upper() + ':\\' + '\\'.join(parts[3:])
-    return str(p)
+# WSL 挂载路径转 Windows 路径，实现放在 config 中与 Codex 工作区共用
+win_path = config.win_path
 
 
 def _probe(p: Path) -> dict:
