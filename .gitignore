@@ -1,0 +1,21 @@
+# Python 缓存与测试缓存
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 虚拟环境（运行时放在 WSL ~/jianzhi/feedback-pipeline/.venv，这里防误建）
+.venv/
+venv/
+
+# 运行数据不进仓库（数据库、日志、轨迹副本都在 WSL ~/jianzhi/feedback-pipeline/data）
+data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# 编辑器与系统文件
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

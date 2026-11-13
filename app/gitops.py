@@ -1,0 +1,193 @@
+# -*- coding: utf-8 -*-
+"""git 操作：孤儿分支初始化、初始快照、重做重置、产物快照、全新克隆。"""
+import shutil
+import subprocess
+from pathlib import Path
+
+GITIGNORE = """# 凭据文件
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa*
+credentials*.json
+secrets*.json
+# 缓存目录
+.cache/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+"""
+
+# 补交被忽略文件时排除的依赖与缓存目录
+DEP_DIRS = {'node_modules', '.venv', 'venv', '__pycache__', 'dist', 'build', 'target',
+            '.cache', '.pytest_cache', '.mypy_cache', '.ruff_cache', '.gradle', '.next',
+            '.nuxt', '.turbo', '.parcel-cache', 'out', 'bin', 'obj', '.idea', '.vscode'}
+
+
+class GitError(RuntimeError):
+    pass
+
+
+def git(cwd: Path, *args: str, check: bool = True, log=None) -> str:
+    cmd = ['git', *args]
+    p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8',
+                       errors='replace')
+    if log:
+        log(f"$ git {' '.join(args)}")
+        if p.stdout.strip():
+            log(p.stdout.strip()[-2000:])
+        if p.stderr.strip():
+            log(p.stderr.strip()[-2000:])
+    if check and p.returncode != 0:
+        raise GitError(f"git {' '.join(args)} 失败：{p.stderr.strip()[-500:]}")
+    return p.stdout.strip()
+
+
+def remote_head(cwd: Path, branch: str, log=None) -> str | None:
+    out = git(cwd, 'ls-remote', '--heads', 'origin', branch, log=log)
+    for line in out.splitlines():
+        sha, ref = line.split('\t', 1)
+        if ref == f'refs/heads/{branch}':
+            return sha
+    return None
+
+
+def is_ancestor(cwd: Path, a: str, b: str) -> bool:
+    p = subprocess.run(['git', 'merge-base', '--is-ancestor', a, b], cwd=cwd, capture_output=True)
+    return p.returncode == 0
+
+
+def init_task_dir(task_dir: Path, branch: str, repo: str, log=None):
+    """创建做题目录并初始化为孤儿分支，此时不推送。"""
+    if task_dir.exists() and any(task_dir.iterdir()):
+        raise GitError(f'做题目录已存在且非空：{task_dir}')
+    task_dir.mkdir(parents=True, exist_ok=True)
+    git(task_dir, 'init', '-b', branch, log=log)
+    git(task_dir, 'remote', 'add', 'origin', repo, log=log)
+    if remote_head(task_dir, branch, log=log):
+        raise GitError(f'远端已存在分支 {branch}，请换一个分支名')
+    (task_dir / '.gitignore').write_text(GITIGNORE, encoding='utf-8')
+
+
+def ignored_entries(task_dir: Path) -> list[str]:
+    """当前被忽略的文件与目录（目录以 / 结尾，不展开）。"""
+    out = git(task_dir, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory')
+    return sorted(x for x in out.splitlines() if x)
+
+
+def commit_initial(task_dir: Path, branch: str, log=None) -> str:
+    """提交并推送初始快照，返回 40 位 SHA。"""
+    git(task_dir, 'add', '-A', log=log)
+    git(task_dir, 'commit', '-m', 'chore: 初始化仓库', log=log)
+    git(task_dir, 'push', '-u', 'origin', f'HEAD:refs/heads/{branch}', log=log)
+    return git(task_dir, 'rev-parse', 'HEAD')
+
+
+def reset_to_initial(task_dir: Path, branch: str, init_sha: str, log=None):
+    """重做：本地恢复到初始快照；远端若被作废会话推送过，退回到初始快照。"""
+    git(task_dir, 'reset', '--hard', init_sha, log=log)
+    git(task_dir, 'clean', '-xfd', log=log)
+    head = remote_head(task_dir, branch, log=log)
+    if head and head != init_sha:
+        git(task_dir, 'fetch', 'origin', branch, log=log)
+        if not is_ancestor(task_dir, init_sha, head):
+            raise GitError('远端分支历史已被改写，初始快照不再是其祖先，请人工处理')
+        # 作废会话的提交未被记录，退回分支指针不影响初始快照可达性
+        git(task_dir, 'push', '--force-with-lease=refs/heads/%s:%s' % (branch, head),
+            'origin', f'{init_sha}:refs/heads/{branch}', log=log)
+
+
+def _is_dep_entry(entry: str) -> bool:
+    parts = [p for p in entry.rstrip('/').split('/') if p]
+    return any(p in DEP_DIRS for p in parts)
+
+
+# 凭据文件名模式：即使是会话期间新出现的被忽略文件，也绝不补交
+SECRET_PATTERNS = ('.env', '.env.*', '*.key', '*.pem', '*.p12', '*.pfx', 'id_rsa*',
+                   'credentials*.json', 'secrets*.json', '*.keystore', '.npmrc', '.pypirc')
+
+
+def _is_secret_entry(entry: str) -> bool:
+    import fnmatch
+    name = entry.rstrip('/').split('/')[-1]
+    if name == '.env.example':
+        return False
+    return any(fnmatch.fnmatch(name, p) for p in SECRET_PATTERNS)
+
+
+def commit_artifact(task_dir: Path, branch: str, init_sha: str, ignored_before: list[str],
+                    summary: str = '', log=None) -> dict:
+    """提交产物快照：校验远端、补交会话期间新出现的被忽略文件、推送。"""
+    if not is_ancestor(task_dir, init_sha, 'HEAD'):
+        raise GitError('本地 HEAD 不再以初始快照为祖先（模型可能改写了历史）')
+    head = remote_head(task_dir, branch, log=log)
+    if head is None:
+        raise GitError('远端分支不存在（可能被模型删除）')
+    if head != init_sha:
+        git(task_dir, 'fetch', 'origin', branch, log=log)
+        if not is_ancestor(task_dir, init_sha, head):
+            raise GitError('远端分支被强推改写，初始快照不再是其祖先')
+        if not is_ancestor(task_dir, head, 'HEAD'):
+            raise GitError('远端分支有本地没有的提交，请人工检查')
+    git(task_dir, 'add', '-A', log=log)
+    before = set(ignored_before or [])
+    forced = []
+    for e in ignored_entries(task_dir):
+        if e in before or _is_dep_entry(e):
+            continue
+        if e.endswith('/'):
+            # 目录展开成文件逐个过滤，避免把目录里的凭据一起带进去
+            files = git(task_dir, 'ls-files', '--others', '--ignored', '--exclude-standard', '--', e)
+            forced += [f for f in files.splitlines()
+                       if f and not _is_dep_entry(f) and not _is_secret_entry(f)]
+        elif not _is_secret_entry(e):
+            forced.append(e)
+    for e in forced:
+        git(task_dir, 'add', '-f', '--', e, log=log)
+    staged = git(task_dir, 'diff', '--cached', '--name-only')
+    if staged:
+        git(task_dir, 'commit', '-m', f"feat: 模型产物 - {summary or branch}", log=log)
+    git(task_dir, 'push', 'origin', f'HEAD:refs/heads/{branch}', log=log)
+    sha = git(task_dir, 'rev-parse', 'HEAD')
+    if not is_ancestor(task_dir, init_sha, sha):
+        raise GitError('初始快照不是产物快照的祖先')
+    return {'sha': sha, 'forced_ignored': forced, 'model_commits':
+            int(git(task_dir, 'rev-list', '--count', f'{init_sha}..{sha}'))}
+
+
+def fresh_clone(repo: str, branch: str, sha: str, dest: Path, log=None):
+    """把指定提交全新克隆到 dest（先删除旧目录）。"""
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    git(dest.parent, 'clone', '--branch', branch, '--single-branch', repo, dest.name, log=log)
+    git(dest, 'checkout', '--detach', sha, log=log)
+
+
+def diff_text(task_dir: Path, a: str, b: str, limit: int = 60000) -> str:
+    """产物 diff：先给统计，再给正文（超长截断）。"""
+    stat = git(task_dir, 'diff', '--stat', a, b)
+    body = git(task_dir, 'diff', a, b, '--', '.', ':(exclude)*.lock', ':(exclude)package-lock.json')
+    if len(body) > limit:
+        body = body[:limit] + f'\n...（diff 超长，已截断，总长 {len(body)} 字符）'
+    return stat + '\n\n' + body
+
+
+def large_files(task_dir: Path, warn_mb: int = 50, max_mb: int = 100) -> dict:
+    """统计工作区内超限的大文件（不含 .git）。"""
+    warn, block = [], []
+    for f in task_dir.rglob('*'):
+        if '.git' in f.parts or not f.is_file():
+            continue
+        mb = f.stat().st_size / 1024 / 1024
+        rel = str(f.relative_to(task_dir))
+        if mb > max_mb:
+            block.append((rel, round(mb, 1)))
+        elif mb > warn_mb:
+            warn.append((rel, round(mb, 1)))
+    return {'warn': warn, 'block': block}

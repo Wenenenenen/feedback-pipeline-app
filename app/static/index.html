@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>出题评测流水线</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>出题评测流水线</h1>
+    <span class="sub">feedback-pipeline · 127.0.0.1:8765</span>
+  </div>
+  <nav>
+    <button data-tab="tasks" class="tab active">题目</button>
+    <button data-tab="gen" class="tab">批量出题</button>
+    <button data-tab="config" class="tab">配置</button>
+  </nav>
+</header>
+
+<main>
+  <!-- 题目列表与详情 -->
+  <section id="tab-tasks" class="tab-body">
+    <div class="list-pane">
+      <div class="toolbar">
+        <button id="list-toggle" class="ghost list-toggle" title="向左折叠题目列表">«</button>
+        <select id="status-filter"><option value="">全部状态</option></select>
+        <button id="refresh" class="ghost">刷新</button>
+        <span class="spacer"></span>
+        <span class="count" id="task-count"></span>
+        <button id="submission" class="primary" title="勾选题目时只看勾选的 否则看全部已完成的">提交表</button>
+      </div>
+      <table id="task-table">
+        <thead><tr><th><input type="checkbox" id="check-all"></th><th>序号</th><th>题目</th><th>难度</th><th>状态</th><th>更新</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="detail-pane" id="detail"><div class="empty-state"><div><b>未选择题目</b>点左侧任意一行查看详情与可执行操作</div></div></div>
+  </section>
+
+  <!-- 批量出题 -->
+  <section id="tab-gen" class="tab-body hidden">
+    <div class="page">
+      <form id="gen-form" class="card">
+        <h3>批量出题</h3>
+        <div class="fields">
+          <div class="field"><div class="lab">所属领域<small>固定主领域</small></div>
+            <div class="ctl"><div><span class="domain-lock" id="gen-domain-label"></span></div><input type="hidden" name="domain" id="gen-domain"></div></div>
+          <div class="field"><div class="lab">子方向</div>
+            <div class="ctl"><select name="subdomain" id="gen-sub"><option value="">由 AI 选择</option></select></div></div>
+          <div class="field"><div class="lab">数量<small>1 到 10</small></div>
+            <div class="ctl"><input name="count" type="number" min="1" max="10" value="3"></div></div>
+          <div class="field"><div class="lab">难度</div>
+            <div class="ctl"><select name="difficulty"><option value="">由 AI 判断</option><option>困难</option><option>地狱</option></select></div></div>
+          <div class="field"><div class="lab">技术栈偏好<small>可选</small></div>
+            <div class="ctl"><input name="stack" placeholder="如 Rust, WebGPU, FFmpeg"></div></div>
+          <div class="field"><div class="lab">补充要求<small>可选</small></div>
+            <div class="ctl"><textarea name="extra" rows="3" placeholder="对题目方向、素材或环境的额外要求"></textarea></div></div>
+          <div class="form-foot"><button class="primary" type="submit">开始出题</button></div>
+        </div>
+      </form>
+      <div class="card"><h3>出题运行记录</h3><div id="gen-runs"></div></div>
+    </div>
+  </section>
+
+  <!-- 配置 -->
+  <section id="tab-config" class="tab-body hidden">
+    <div class="page">
+      <form id="config-form" class="card"></form>
+    </div>
+  </section>
+</main>
+
+<!-- 运行日志 -->
+<div id="log-panel" class="hidden">
+  <div class="log-head"><span id="log-title"></span><span id="log-status"></span>
+    <button id="log-stop">停止</button><button id="log-close">关闭</button></div>
+  <pre id="log-body"></pre>
+</div>
+<!-- 提交表弹窗：每道题一块，单元格点击即复制 -->
+<div id="sub-modal" class="modal hidden">
+  <div class="modal-box" role="dialog" aria-label="提交表">
+    <div class="modal-head">
+      <h3>提交表</h3><span class="muted" id="sub-scope"></span>
+      <span class="spacer"></span>
+      <span class="muted hint">点单元格复制该格 复制整行可直接粘贴到表格</span>
+      <button type="button" id="sub-expand" class="ghost">全部展开</button>
+      <button type="button" id="sub-collapse" class="ghost">全部折叠</button>
+      <button type="button" id="sub-copy-head">复制表头</button>
+      <button type="button" id="sub-close" class="ghost">关闭</button>
+    </div>
+    <div class="modal-body" id="sub-body"></div>
+  </div>
+</div>
+<div id="toast" class="hidden"></div>
+<script src="app.js"></script>
+</body>
+</html>
