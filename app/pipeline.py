@@ -101,9 +101,12 @@ def view(t: dict) -> dict:
 
 def run_dir_lines(run_key: str) -> list[str]:
     """告诉 skill 本次运行目录，临时文件只放这里。"""
-    ws = config.load()['agent_workspace_win'].rstrip('\\')
+    cfg = config.load()
+    ws = cfg['agent_workspace_win'].rstrip('\\')
+    # 发行版名随运行环境配置传入，skill 与 AGENTS.md 中不写死
     return ['## 本次运行', f'运行 ID {run_key}',
-            f'运行目录 {ws}\\runs\\{run_key}（草稿、验证脚本等临时文件只能放在这里）', '']
+            f'运行目录 {ws}\\runs\\{run_key}（草稿、验证脚本等临时文件只能放在这里）',
+            f"WSL 发行版 {cfg['wsl_distro']}（Windows 读取 WSL 文件用 \\\\wsl.localhost\\{cfg['wsl_distro']}\\ 开头的路径）", '']
 
 
 def subdomain_ok(domain: str, subdomain: str) -> bool:

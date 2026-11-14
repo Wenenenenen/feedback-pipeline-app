@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """通过 WSL 互操作调用 Windows 版 codex exec，流式记录日志，校验 schema 输出。"""
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -13,6 +14,7 @@ from . import config
 # 不视为失败的 stderr 提示
 STDERR_NOISE = ('failed to write models cache', 'Reading additional input from stdin')
 RATE_LIMIT_MARKS = ('usage limit', 'rate limit', 'rate_limit', '429', 'quota')
+POWERSHELL_FALLBACK = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
 
 
 class CodexError(RuntimeError):
@@ -37,7 +39,12 @@ def _kill_windows(run_key: str):
     ps = ("Get-CimInstance Win32_Process -Filter \"Name='codex.exe'\" | "
           f"Where-Object {{ $_.CommandLine -like '*{run_key}*' }} | "
           "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
-    subprocess.run(['powershell.exe', '-NoProfile', '-Command', ps], capture_output=True, timeout=60)
+    # WSL 关闭 appendWindowsPath 时 PATH 里没有 powershell.exe，回退到系统盘的固定位置
+    exe = shutil.which('powershell.exe') or POWERSHELL_FALLBACK
+    try:
+        subprocess.run([exe, '-NoProfile', '-Command', ps], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        pass
 
 
 def _event_line(line: str) -> str:

@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "skill": { "type": "string" },
+    "stdin_text": { "type": "string" },
+    "node_version": { "type": "string" },
+    "unc_first_line": { "type": "string" }
+  },
+  "required": ["skill", "stdin_text", "node_version", "unc_first_line"],
+  "additionalProperties": false
+}
