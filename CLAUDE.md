@@ -22,5 +22,5 @@
 ## 常用命令
 
 - 测试（WSL 中）：`cd <仓库的 WSL 路径> && ~/jianzhi/feedback-pipeline/.venv/bin/python -m pytest -q -p no:cacheprovider`
-- 重启后端：先确认 `/api/runs` 没有运行中的任务，在 WSL 中结束 `uvicorn app.main:app` 进程，再在 Windows 中执行 `pwsh -File scripts\start-detached.ps1`。不要用会话内的后台任务启动后端，会话结束时后端会跟着退出，正在跑的验收也会中断。
+- 重启后端：在 WSL 中执行 `bash scripts/stop.sh`（有运行中的任务时会列出并拒绝停止，不要随意加 `--force`），再在 Windows 中执行 `pwsh -File scripts\start-detached.ps1`（等到接口可访问才返回，失败返回非 0）。不要用会话内的后台任务启动后端，会话结束时后端会跟着退出，正在跑的验收也会中断。
 - Codex 冒烟（WSL 中）：`bash scripts/smoke-codex.sh`

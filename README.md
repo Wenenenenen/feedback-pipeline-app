@@ -78,7 +78,12 @@ pwsh -File E:\WorkSpace\jianzhi\feedback-pipeline-app\scripts\start-detached.ps1
 bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/start.sh
 ```
 
-也可以在 Windows 中双击仓库根目录的 `start.cmd` 前台运行：日志直接显示在弹出的窗口里，关闭窗口或按 Ctrl+C 即停止；后端已在后台运行时只提示地址，不重复启动。发行版不是 Ubuntu-24.04 时在命令行执行 `start.cmd <发行版名>`。
+也可以在 Windows 中双击仓库根目录的脚本（需要 PowerShell 7，即 `pwsh`）：
+
+- `start.cmd`：在后台启动后端，窗口里实时显示本次启动的日志，接口可访问后显示「后端启动成功」，按任意键关闭窗口，后端继续运行；后端已在运行时只提示地址，不重复启动；
+- `stop.cmd`：停止后端；有出题、验收、返修正在运行时先列出来，按 Y 强制停止，按 N 取消。
+
+发行版不是 Ubuntu-24.04 时在命令行执行 `start.cmd <发行版名>`、`stop.cmd <发行版名>`。WSL 中也可以直接执行 `bash scripts/stop.sh`（加 `--force` 不检查运行中的任务）。
 
 后端退出会中断正在运行的 skill，重启后该运行记为失败，需重新发起。端口可用环境变量 `PIPELINE_PORT` 修改，运行时目录可用 `PIPELINE_HOME` 修改。
 
