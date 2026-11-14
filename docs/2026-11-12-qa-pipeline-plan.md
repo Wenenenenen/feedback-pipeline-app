@@ -61,6 +61,7 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 - 输出：`--output-schema` 约束最终回复为 JSON，后端校验后写入 SQLite。skill 不直接读写数据库，pipectl 取消。
 - 日志：`--json` 事件流逐行推送到页面并存 `data/logs/`。
 - `--ignore-user-config` 跳过 config.toml 中的 MCP、插件、默认模型；模型与推理强度由配置页提供（默认 `gpt-6.1-sol` / `xhigh`）。
+- 配置 `codex_follow_toml` 打开时（CC Switch 或第三方 API 的环境），`codex_runner.model_args` 读取 `codex_config_toml`（留空时用 powershell.exe 取 Windows 的 `CODEX_HOME` 或 `%USERPROFILE%\.codex`，经 `config.wsl_path` 转换，进程内缓存）：`-m` 取 `model`，`model_provider` 与 `[model_providers.<名称>]` 逐项转成 `-c`；`build_cmd` 与 `scripts/smoke-codex.sh` 共用该函数。
 - `--ephemeral` 不落会话文件，流水线会话不会出现在 Codex 客户端历史中。
 - 全局 `~/.codex/AGENTS.md` 仍会加载；工作区 `AGENTS.md` 写明「自动化流水线，只按 schema 输出 JSON，不加称呼」，口吻检查兜底。
 
@@ -69,6 +70,7 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 - 只使用 Windows 默认 CODEX_HOME，与客户端共用同一 `auth.json`，由 Codex 自身的锁协调刷新。
 - 禁止复制 `auth.json`；禁止在 WSL 中运行 Linux 版 codex 并把 CODEX_HOME 指向 `/mnt/c/.../.codex`。
 - 并发默认 2，避免触发 ChatGPT 订阅限流。
+- 沿用 config.toml 时只读该文件，key 仍由 codex 从 `auth.json` 取（CC Switch 写入），流水线不读 `auth.json`。
 
 ### 4. 验收执行
 
@@ -105,6 +107,8 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 > 状态（2026-11-14 夜）：① 收集补交被忽略文件时中文路径被 git 转义导致 `git add` 失败：`gitops.git` 统一加 `-c core.quotepath=off`，列被忽略文件改用 `ls-files -z`，旧任务 `ignored_before` 里的转义路径经 `_unquote` 还原后比较。② 录屏步骤：验收与返修输入新增「录屏环境」（`_record_lines`：录屏目录、命令在录屏目录终端直接执行、不加 wsl.exe 包装），qa-review 与 qa-rework skill 补写法要求（不点精确像素坐标，需要时给控制台脚本）；`pipeline.record_issues` 在录屏卡片标出带包装、用验收或做题目录路径、要求点精确像素的步骤（只提示不卡流程）。alpha-layer-inspector 的录屏步骤已手工改写并实测（控制台脚本先把画布按原始尺寸显示再派发点击）。③ 轨迹文件在页面与提交表按 UNC 路径展示（`config.unc`），提交表轨迹文件与运行录屏两格点击复制所在文件夹（`cell.copy`，`config.win_parent`）；提交表弹窗高度固定。④ 非 `/api/` 响应加 `Cache-Control: no-cache`，避免前端改动被浏览器缓存。68 个测试通过。
 
 > 状态（2026-11-14 夜，续）：`start.cmd` 改为调用 `start-detached.ps1` 后台启动，`start-detached.ps1` 启动后用 `scripts/wait-ready.sh` 跟踪本次新增的 server.log 并轮询 `/api/meta`，就绪输出启动成功标识（返回 0），进程退出返回 1，超时返回 2；新增 `stop.cmd` 与 `scripts/stop.sh`（有运行中的任务时列出并返回 3，`stop.cmd` 用 choice 确认后加 `--force`；SIGTERM 15 秒不退出再 SIGKILL）。已实测停止、未运行时停止、启动、已在运行、超时、列出运行中任务几条路径。WMI 创建进程时传 `Win32_ProcessStartup.ShowWindow = 0`，控制台一开始就隐藏，不再弹出空的 wsl.exe 窗口（DETACHED_PROCESS 会让内层 wsl.exe 自建可见控制台，CREATE_NO_WINDOW 被 WMI 以返回码 21 拒绝）；已用 UI Automation 核对启动前后 Windows Terminal 选项卡不变。
+
+> 状态（2026-11-14 夜，再续）：支持用 CC Switch 或第三方 API 配置的 codex。配置新增 `codex_follow_toml`（默认关闭）与 `codex_config_toml`（留空自动定位）；`codex_runner.model_args` 打开时读取 config.toml 的 model、model_provider 与对应 provider 表转成 `-m`、`-c`，嵌套表展开，内置供应商不要求 provider 表，读不到、不合法、缺 provider 表时启动前报错；启动日志对键名像密钥的 `-c` 值打码（`mask_args`）；`failure_reason` 只看 stderr 与 codex 自身错误事件，新增认证失败识别，401/429 按整数匹配，限流提示去掉「ChatGPT」；冒烟脚本改用 `model_args` 并打印实际参数；配置页加勾选框与路径。75 个测试通过。实测：默认配置冒烟通过；临时运行目录下打开跟随（`model_provider = "openai"`）冒烟通过；provider 表指向不可达地址时 codex 持续重连，证明 `-c` 透传生效。随后新增 `codex_max_reconnects`（默认 10，0 不限制）：`run_skill` 统计连续的 `Reconnecting` 错误事件（`_is_reconnect_event`，其他事件重新计数），达到上限即 kill 并 `_kill_windows`；用假进程测试覆盖触发、重新计数与不限制，77 个测试通过；真实 codex 指向不可达地址、上限 3 时约 27 秒结束且无残留 codex.exe。真实 CC Switch 环境尚未实测。
 
 1. 冒烟测试（已通过，脚本在 `_verify/smoke/`）：
    - WSL 中调用 Windows codex：`echo 回复ok | codex.exe exec --json --ephemeral --ignore-user-config --skip-git-repo-check -m gpt-6.1-sol -C E:\...\pipeline-agent -`，确认事件流可逐行读取、运行后 `codex login status` 仍为已登录、Codex 客户端仍在线、`~/.codex/sessions` 无新增。

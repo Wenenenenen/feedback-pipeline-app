@@ -23,7 +23,7 @@
 | GitHub | WSL 中配好能推送产物仓库的 ssh 密钥 | WSL 中 `ssh -T git@github.com` |
 | Node.js | WSL 中用 nvm 安装（`bash -ic` 能找到 `node`） | WSL 中 `bash -ic 'node -v'` |
 | 做题客户端 | WSL 中安装 Claude Code（`bash -ic` 能找到 `claude`），并按作业要求配置：`~/.claude/settings.json` 的 env 含 `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000`、`DISABLE_COMPACT=1`、`ANTHROPIC_BETAS` 含 `context-1m-2025-08-07`；不放全局 CLAUDE.md、rules、skills、agents、commands、插件、hooks、MCP | 页面「环境检查」会逐项体检 |
-| Codex | Windows 中安装 Codex CLI（如 `npm i -g @openai/codex`），并用 ChatGPT 账号登录（`codex login`） | Windows 中 `codex login status` |
+| Codex | Windows 中安装 Codex CLI（如 `npm i -g @openai/codex`），用 ChatGPT 账号登录（`codex login`），或用 CC Switch 等工具配置第三方供应商（见下面配置里的「沿用 config.toml 的供应商与模型」） | Windows 中 `codex login status`；第三方供应商以冒烟为准 |
 | 验收工具 | WSL 中的 ffmpeg、playwright + chromium | 运行下面的 `setup-verify-tools.sh` |
 | 录屏软件 | 输出 mp4 到固定目录（默认 `E:\GSB-Recordings`） | — |
 
@@ -52,13 +52,15 @@ bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/setup-verify-tools.s
 - **WSL 发行版名**：与 `wsl -l` 中的名称一致；
 - **录屏文件目录**：录屏软件输出目录的 WSL 路径（如 `/mnt/e/GSB-Recordings`）；
 - **提交表已有最大序号**：提交表里已有的最后一个序号，新完成的题目从下一个号开始；
-- 模型名、推理强度、并发数、超时、端口段、各目录根一般保持默认。
+- **沿用 config.toml 的供应商与模型**：codex 用 CC Switch 或手工配置的第三方 API 时勾选。流水线调用 codex 时带 `--ignore-user-config`，不加载 `config.toml`；勾选后每次运行前只读取 Windows `config.toml` 中的 `model`、`model_provider` 和对应的 `[model_providers.<名称>]` 一节，转成 `-m`、`-c` 参数传给 codex，MCP、插件等仍不加载。CC Switch 切换供应商后流水线自动跟随，不用改配置；API key 由 CC Switch 写在 `auth.json`，流水线不读也不改。`config.toml` 没有 `model` 时用配置页的模型名；推理强度始终用配置页的值；
+- **config.toml 路径**：一般留空，自动按 Windows 的 `CODEX_HOME` 或 `%USERPROFILE%\.codex\config.toml` 定位；定位不到时填它的 WSL 路径（如 `/mnt/c/Users/<用户名>/.codex/config.toml`）；
+- 模型名、推理强度、并发数、超时、连续重连上限、端口段、各目录根一般保持默认。
 
 Codex 工作区路径默认取仓库里的 `agent/`，不用改。
 
 ### 4. 冒烟
 
-配置保存后在 WSL 中运行一次，确认 WSL 能调起 Windows 版 codex、ChatGPT 登录有效、`agent/` 下的 skill 能被发现、输出符合 schema、codex 能回调 `wsl.exe` 并读取 WSL 文件：
+配置保存后在 WSL 中运行一次，确认 WSL 能调起 Windows 版 codex、codex 认证有效（ChatGPT 登录或 `config.toml` 中的供应商，脚本会打印实际使用的模型与供应商参数）、`agent/` 下的 skill 能被发现、输出符合 schema、codex 能回调 `wsl.exe` 并读取 WSL 文件：
 
 ```bash
 bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/smoke-codex.sh
@@ -109,7 +111,8 @@ cd /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app
 
 ## 注意
 
-- codex 使用 Windows 默认 `~/.codex` 的 ChatGPT 登录，与 Codex 客户端共用；不要复制 `auth.json`，不要在 WSL 中运行 Linux 版 codex 指向 Windows 的 `.codex`。
+- codex 使用 Windows 默认 `~/.codex` 的认证（ChatGPT 登录，或 CC Switch 写入的第三方 key），与 Codex 客户端共用；不要复制 `auth.json`，不要在 WSL 中运行 Linux 版 codex 指向 Windows 的 `.codex`。
+- 供应商地址不可达时，codex 会一直重连而不退出；流水线在连续重连达到配置页的「连续重连上限」（默认 10 次，每次约 8 秒）时结束运行并报「连续重连 N 次仍连不上供应商」，此时检查网络或 CC Switch 当前供应商。
 - Windows `~/.codex/skills/` 下的个人 skill 会被 codex 一并加载，流水线不依赖它们；不要把 `agent/` 里的 skill 装到全局目录。
 - 不要在仓库根目录放 AGENTS.md，codex 会从仓库根一路加载到 `agent/`，根目录的规则会混入流水线运行。
 - 数据库每天备份到 `data/backups/`，保留 14 份。

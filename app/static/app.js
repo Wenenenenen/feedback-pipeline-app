@@ -659,9 +659,12 @@ const CONFIG_FIELDS = [
   ['agent_workspace_wsl', 'Codex 工作区（WSL 路径）'],
   ['model', '模型名'],
   ['reasoning_effort', '推理强度'],
+  ['codex_follow_toml', '沿用 config.toml 的供应商与模型（用 CC Switch 或第三方 API 时勾选；勾选后模型取 config.toml 的 model，没有时才用上面的模型名）', 'checkbox'],
+  ['codex_config_toml', 'config.toml 路径（WSL 路径，留空自动定位 Windows 的 .codex\\config.toml）'],
   ['wsl_distro', 'WSL 发行版名'],
   ['concurrency', 'AI 环节并发数', 'number'],
   ['run_timeout_min', '单次运行超时（分钟）', 'number'],
+  ['codex_max_reconnects', '连续重连上限（codex 连续重连达到该次数即判定连不上供应商并失败，0 表示不限制）', 'number'],
   ['port_base', '验收端口起点', 'number'],
   ['port_span', '每题端口数量', 'number'],
   ['tasks_root', '做题目录根'],
@@ -676,7 +679,11 @@ async function loadConfig() {
   // 括号里的说明拆成小字提示，标签列保持简短对齐
   $('#config-form').innerHTML = '<h3>配置</h3><div class="fields">' + CONFIG_FIELDS.map(([k, label, type]) => {
     const m = label.match(/^(.*?)（(.*)）$/);
-    return field(m ? m[1] : label, `<input name="${k}" type="${type || 'text'}" value="${esc(c[k])}" class="${type ? '' : 'mono'}">`, m ? m[2] : '');
+    // 勾选框单独渲染，保存时按勾选状态转成布尔值
+    const ctl = type === 'checkbox'
+      ? `<label class="check"><input name="${k}" type="checkbox" ${c[k] ? 'checked' : ''}> 启用</label>`
+      : `<input name="${k}" type="${type || 'text'}" value="${esc(c[k])}" class="${type ? '' : 'mono'}">`;
+    return field(m ? m[1] : label, ctl, m ? m[2] : '');
   }).join('') + '<div class="form-foot"><button class="primary" type="submit">保存配置</button></div></div>';
 }
 
@@ -685,6 +692,8 @@ $('#config-form').onsubmit = e => {
   run(async () => {
     const body = Object.fromEntries(new FormData(e.target));
     CONFIG_FIELDS.filter(f => f[2] === 'number').forEach(([k]) => body[k] = +body[k]);
+    // 未勾选的复选框不在 FormData 里，按元素状态显式取值
+    CONFIG_FIELDS.filter(f => f[2] === 'checkbox').forEach(([k]) => body[k] = e.target.elements[k].checked);
     await api('/api/config', { method: 'PUT', body });
     toast('配置已保存');
   });

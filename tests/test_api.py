@@ -244,6 +244,167 @@ def test_build_cmd():
     cmd = codex_runner.build_cmd(cfg, 'qa-review', 'run1')
     assert '--ephemeral' in cmd and '--ignore-user-config' in cmd and cmd[-1] == '$qa-review'
     assert cmd[cmd.index('-o') + 1].endswith('\\runs\\run1\\result.json')
+    # 默认不跟随 config.toml：模型参数与原来一致，紧跟推理强度
+    i = cmd.index('-m')
+    assert cmd[i:i + 4] == ['-m', cfg['model'], '-c', f'model_reasoning_effort="{cfg["reasoning_effort"]}"']
+    assert sum(1 for c in cmd if c == '-c') == 1
+
+
+CC_SWITCH_TOML = '''
+model_provider = "relay"
+model = "gpt-relay-1"
+model_reasoning_effort = "high"
+
+[model_providers.relay]
+name = "Relay \\"中转\\""
+base_url = "https://relay.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+request_max_retries = 4
+experimental_bearer_token = "sk-secret"
+
+[model_providers.relay.http_headers]
+X-Org = "team"
+
+[mcp_servers.fetch]
+command = "uvx"
+'''
+
+
+def _follow_cfg(tmp_path, text):
+    p = tmp_path / 'config.toml'
+    p.write_text(text, encoding='utf-8')
+    return dict(config.DEFAULTS, codex_follow_toml=True, codex_config_toml=str(p))
+
+
+def test_model_args_follow_toml(tmp_path):
+    import tomllib
+    args = codex_runner.model_args(_follow_cfg(tmp_path, CC_SWITCH_TOML))
+    assert args[:2] == ['-m', 'gpt-relay-1']
+    pairs = [args[i + 1] for i in range(2, len(args), 2)]
+    assert all(args[i] == '-c' for i in range(2, len(args), 2))
+    assert pairs[0] == 'model_provider="relay"'
+    kv = dict(p.split('=', 1) for p in pairs)
+    # 每个值都能被当成 TOML 字面量解析回原值
+    back = {k: tomllib.loads(f'v = {v}')['v'] for k, v in kv.items()}
+    assert back['model_providers.relay.name'] == 'Relay "中转"'
+    assert back['model_providers.relay.base_url'] == 'https://relay.example.com/v1'
+    assert back['model_providers.relay.requires_openai_auth'] is True
+    assert back['model_providers.relay.request_max_retries'] == 4
+    assert back['model_providers.relay.http_headers.X-Org'] == 'team'
+    # 只透传供应商与模型，MCP 与推理强度不透传
+    assert not any(k.startswith('mcp_servers') or 'reasoning' in k for k in kv)
+    # 日志里密钥打码
+    masked = codex_runner.mask_args(args)
+    assert 'model_providers.relay.experimental_bearer_token=***' in masked
+    assert 'model_providers.relay.base_url="https://relay.example.com/v1"' in masked
+    # build_cmd 用同一组参数，推理强度仍来自配置页
+    cmd = codex_runner.build_cmd(_follow_cfg(tmp_path, CC_SWITCH_TOML), 'qa-gen', 'r1')
+    assert cmd[cmd.index('-m') + 1] == 'gpt-relay-1'
+    assert 'model_reasoning_effort="xhigh"' in cmd
+
+
+def test_model_args_follow_toml_edge_cases(tmp_path):
+    # 未指定供应商（ChatGPT 官方登录）：只传模型；没有 model 时用配置页的模型名
+    assert codex_runner.model_args(_follow_cfg(tmp_path, 'model = "m1"\n')) == ['-m', 'm1']
+    assert codex_runner.model_args(_follow_cfg(tmp_path, '')) == ['-m', config.DEFAULTS['model']]
+    # 内置供应商不需要 provider 表
+    assert codex_runner.model_args(_follow_cfg(tmp_path, 'model_provider = "openai"\n'))[2:] == \
+        ['-c', 'model_provider="openai"']
+    with pytest.raises(codex_runner.CodexError, match='找不到'):
+        codex_runner.model_args(_follow_cfg(tmp_path, 'model_provider = "relay"\n'))
+    with pytest.raises(codex_runner.CodexError, match='TOML'):
+        codex_runner.model_args(_follow_cfg(tmp_path, 'model = \n'))
+    cfg = dict(config.DEFAULTS, codex_follow_toml=True, codex_config_toml=str(tmp_path / 'missing.toml'))
+    with pytest.raises(codex_runner.CodexError, match='读取'):
+        codex_runner.model_args(cfg)
+
+
+def test_wsl_path():
+    assert config.wsl_path('C:\\Users\\张三\\.codex') == '/mnt/c/Users/张三/.codex'
+    assert config.wsl_path('D:\\') == '/mnt/d'
+    assert config.wsl_path('/home/a') == '/home/a'
+
+
+class _FakeProc:
+    """假的 codex 进程：按给定事件逐行输出，被 kill 后不再输出。"""
+
+    def __init__(self, lines, code=1):
+        import io
+        self.lines, self.code, self.killed = lines, code, False
+        self.stdin = io.BytesIO()
+        self.stderr = io.BytesIO(b'')
+        self.returncode = None
+
+    @property
+    def stdout(self):
+        for s in self.lines:
+            if self.killed:
+                return
+            yield (s + '\n').encode('utf-8')
+
+    def poll(self):
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    def wait(self):
+        if self.returncode is None:
+            self.returncode = self.code
+        return self.returncode
+
+
+def _run_fake(tmp_path, monkeypatch, lines, max_reconnects):
+    ws = tmp_path / 'ws'
+    (ws / 'schemas').mkdir(parents=True, exist_ok=True)
+    src = Path(config.DEFAULTS['agent_workspace_wsl']) / 'schemas' / 'qa-gen.json'
+    (ws / 'schemas' / 'qa-gen.json').write_text(src.read_text(encoding='utf-8'), encoding='utf-8')
+    config.save({'agent_workspace_wsl': str(ws), 'codex_max_reconnects': max_reconnects})
+    proc = _FakeProc(lines)
+    kills = []
+    monkeypatch.setattr(codex_runner.subprocess, 'Popen', lambda *a, **k: proc)
+    monkeypatch.setattr(codex_runner, '_kill_windows', kills.append)
+    logs = []
+    with pytest.raises(codex_runner.CodexError) as e:
+        codex_runner.run_skill('qa-gen', '输入', 'r1', logs.append)
+    return str(e.value), proc, kills, logs
+
+
+RECONNECT = '{"type":"error","message":"Reconnecting... waiting for network (Connection failed)"}'
+
+
+def test_run_skill_stops_after_reconnects(data_dir, tmp_path, monkeypatch):
+    lines = ['{"type":"thread.started"}', '{"type":"turn.started"}'] + [RECONNECT] * 50
+    msg, proc, kills, logs = _run_fake(tmp_path, monkeypatch, lines, 5)
+    assert '连续重连 5 次' in msg and proc.killed and kills == ['r1']
+    # 第 5 次重连后立即结束，不再读后面的事件
+    assert sum('Reconnecting' in s for s in logs) == 5
+
+
+def test_run_skill_reconnect_counter_resets(data_dir, tmp_path, monkeypatch):
+    # 重连之间穿插正常事件时重新计数，不触发上限；codex 自己失败时按原因报错
+    lines = ([RECONNECT] * 4 + ['{"type":"item.completed","item":{"type":"reasoning","text":"x"}}']) * 3 + \
+        ['{"type":"turn.failed","error":{"message":"401 Unauthorized"}}']
+    msg, proc, kills, _ = _run_fake(tmp_path, monkeypatch, lines, 5)
+    assert '认证失败' in msg and not proc.killed and kills == []
+    # 上限为 0 时不限制
+    msg, proc, _, _ = _run_fake(tmp_path, monkeypatch, [RECONNECT] * 30, 0)
+    assert msg.startswith('codex 退出码 1') and not proc.killed
+
+
+def test_failure_reason():
+    auth = codex_runner.failure_reason(1, [], ['{"type":"turn.failed","error":{"message":"401 Unauthorized"}}'])
+    assert '认证失败' in auth
+    assert '额度限流' in codex_runner.failure_reason(1, ['ERROR: You have hit your usage limit'], [])
+    # 耗时数字里的 401、429 不算状态码
+    assert codex_runner.failure_reason(2, ['took 14010ms', 'x4291'], []).startswith('codex 退出码 2')
+    # 命令输出里的 429 不在判断范围内（只看 stderr 与错误事件）
+    assert codex_runner._is_error_event('{"type":"error","message":"stream error"}')
+    assert codex_runner._is_error_event('{"type":"item.completed","item":{"type":"error","message":"x"}}')
+    assert not codex_runner._is_error_event(
+        '{"type":"item.completed","item":{"type":"command_execution","aggregated_output":"HTTP 429"}}')
 
 
 def test_schemas_are_strict():

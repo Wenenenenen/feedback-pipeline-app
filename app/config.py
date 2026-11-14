@@ -21,6 +21,15 @@ def win_path(p) -> str:
     return str(p)
 
 
+def wsl_path(p: str) -> str:
+    """Windows 盘符路径转换为 WSL 挂载路径，如 C:\\Users\\x → /mnt/c/Users/x；其他路径原样返回。"""
+    s = str(p).strip()
+    if len(s) >= 2 and s[1] == ':' and s[0].isalpha():
+        rest = s[2:].replace('\\', '/').strip('/')
+        return f'/mnt/{s[0].lower()}' + (f'/{rest}' if rest else '')
+    return s
+
+
 def unc(path) -> str:
     """WSL 路径转换为 Windows 侧可读的 UNC 路径，如 \\\\wsl.localhost\\Ubuntu-24.04\\home\\...；挂载盘路径转为盘符路径。"""
     s = str(path)
@@ -55,6 +64,13 @@ DEFAULTS = {
     'agent_workspace_wsl': str(AGENT_DIR),
     'model': 'gpt-6.1-sol',
     'reasoning_effort': 'xhigh',
+    # 沿用 Windows codex 的 config.toml 中的供应商与模型（CC Switch 或第三方 API 时打开）；
+    # 只读取 model、model_provider 和对应的 [model_providers.<名称>]，MCP、插件等仍不加载
+    'codex_follow_toml': False,
+    # config.toml 的 WSL 路径，留空时按 Windows 的 CODEX_HOME 或 %USERPROFILE%\.codex 自动定位
+    'codex_config_toml': '',
+    # codex 连续报告重连（Reconnecting...）达到该次数即判定连不上供应商并结束运行，0 表示不限制
+    'codex_max_reconnects': 10,
     'wsl_distro': 'Ubuntu-24.04',
     'concurrency': 2,
     'run_timeout_min': 60,
