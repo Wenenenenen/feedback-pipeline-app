@@ -239,7 +239,7 @@ def start_prepare(task_id: int) -> str:
             log(f'做题目录已初始化 {d}')
         req = t['env_requirements'] or {}
         # 先查工具链，素材生成脚本可能依赖这些工具
-        items = envcheck.toolchain_check(req.get('toolchain') or [])
+        items = envcheck.toolchain_check(req.get('toolchain') or [], cwd=str(d))
         old_gpu = {i['name']: i for i in (t['env_check'] or []) if i.get('manual')}
         for g in envcheck.gpu_items(req):
             if old_gpu.get(g['name'], {}).get('ok'):

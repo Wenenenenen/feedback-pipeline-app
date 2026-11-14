@@ -17,6 +17,7 @@
 | `codex exec` 参数 | 支持 `--json`、`-o`、`--output-schema`、`--ephemeral`、`--ignore-user-config`（不读 config.toml，认证仍用 CODEX_HOME）、`-C`、`--add-dir`、`-s`、`--skip-git-repo-check`、`-m`、`-c`；prompt 可走 stdin |
 | WSL 发行版 / 用户 | Ubuntu-24.04，用户 `wendy`，已有 `~/jianzhi/feedback-pipeline/docs/` |
 | WSL 的 node / claude | 只在交互式 shell 中可用（nvm），非交互命令需用 `bash -ic` |
+| 后端里调 `bash -ic` | 后端由 `bash -ic` 启动、持有控制终端，子进程 `bash -ic` 必须 `start_new_session=True`：否则它抢占终端前台进程组且单条命令时直接 exec 不归还，下一个 `bash -ic` 向整个进程组发 SIGTTIN，后端被停住（页面 Failed to fetch）；工具链检查在做题目录执行 |
 | WSL `~/.claude` | 无 CLAUDE.md、rules、skills；settings.json 含 `CLAUDE_CODE_MAX_CONTEXT_TOKENS`、`DISABLE_COMPACT`、`ANTHROPIC_BETAS`、`ANTHROPIC_MODEL` |
 | WSL 网络 | 可访问 npm registry；Windows 本机 localhost 代理未镜像进 WSL（NAT 模式），github 推送需在实施时确认 |
 

@@ -31,9 +31,10 @@ def download(task_dir: Path, item: dict, log) -> dict:
 def run_script(task_dir: Path, item: dict, log, timeout: int = 1800) -> dict:
     """执行生成脚本（准备环境时自动执行），工作目录为做题目录。"""
     log(f"执行生成脚本 {item['path']}\n{item['script']}")
+    # 新会话执行，避免交互式 bash 抢占后端的控制终端（原因见 envcheck._bash）
     p = subprocess.run(['bash', '-ic', item['script']], cwd=task_dir, capture_output=True,
                        text=True, timeout=timeout, encoding='utf-8', errors='replace',
-                       stdin=subprocess.DEVNULL)
+                       stdin=subprocess.DEVNULL, start_new_session=True)
     log(p.stdout[-3000:])
     if p.returncode != 0:
         log(p.stderr[-3000:])

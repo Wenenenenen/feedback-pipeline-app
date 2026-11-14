@@ -64,8 +64,11 @@ def client_check(claude_home: Path, task_dir: str) -> dict:
 def _bash(cmd: str, timeout: int = 60, cwd: str | None = None) -> tuple[int, str]:
     """用交互式 bash 执行，以便加载 nvm 等环境。"""
     try:
+        # 新会话执行，不继承后端的控制终端：交互式 bash 会抢占终端前台进程组，
+        # 单条命令时 bash 直接 exec 不归还，下一个 bash -ic 就向整个进程组发 SIGTTIN 把后端停住
         p = subprocess.run(['bash', '-ic', cmd], capture_output=True, text=True, timeout=timeout,
-                           cwd=cwd, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL)
+                           cwd=cwd, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL,
+                           start_new_session=True)
     except subprocess.TimeoutExpired:
         return -1, '超时'
     noise = ('no job control', 'cannot set terminal process group')
@@ -78,11 +81,11 @@ def _version_tuple(text: str) -> tuple:
     return tuple(int(x or 0) for x in m.groups()) if m else ()
 
 
-def toolchain_check(toolchain: list[dict]) -> list[dict]:
-    """逐项执行检查命令，比较最低版本。"""
+def toolchain_check(toolchain: list[dict], cwd: str | None = None) -> list[dict]:
+    """逐项执行检查命令，比较最低版本。cwd 为做题目录，检查命令里的相对路径（如 .venv/bin/python）按它解析。"""
     items = []
     for t in toolchain or []:
-        code, out = _bash(t.get('check_command') or f"{t.get('name')} --version")
+        code, out = _bash(t.get('check_command') or f"{t.get('name')} --version", cwd=cwd)
         first = out.splitlines()[0] if out else ''
         ok = code == 0
         need = t.get('min_version') or ''

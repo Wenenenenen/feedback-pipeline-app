@@ -78,7 +78,7 @@ def _prepare_env(client, tmp_path, monkeypatch, gpu_ok=None):
     remote = tmp_path / 'remote.git'
     run(['git', 'init', '--bare', str(remote)], tmp_path)
     client.put('/api/config', json={'github_repo': str(remote), 'tasks_root': str(tmp_path / 'tasks')})
-    monkeypatch.setattr(envcheck, 'toolchain_check', lambda tc: [
+    monkeypatch.setattr(envcheck, 'toolchain_check', lambda tc, cwd=None: [
         {'name': 'python', 'ok': True, 'detail': 'Python 3.12.3', 'fix': ''}])
     monkeypatch.setattr(envcheck, 'net_check', lambda urls: [])
     monkeypatch.setattr(envcheck, 'client_check', lambda home, d: {
