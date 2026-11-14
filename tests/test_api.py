@@ -71,6 +71,74 @@ def test_review_schema_repro_enum_matches():
     assert s['properties']['reproducibility']['enum'] == pipeline.REPRO_LEVELS
 
 
+def _prepare_env(client, tmp_path, monkeypatch, gpu_ok=None):
+    """准备环境测试的公共设置：临时裸仓库当远端，工具链、外网、客户端体检返回固定结果。"""
+    from app import envcheck
+    from tests.conftest import run
+    remote = tmp_path / 'remote.git'
+    run(['git', 'init', '--bare', str(remote)], tmp_path)
+    client.put('/api/config', json={'github_repo': str(remote), 'tasks_root': str(tmp_path / 'tasks')})
+    monkeypatch.setattr(envcheck, 'toolchain_check', lambda tc: [
+        {'name': 'python', 'ok': True, 'detail': 'Python 3.12.3', 'fix': ''}])
+    monkeypatch.setattr(envcheck, 'net_check', lambda urls: [])
+    monkeypatch.setattr(envcheck, 'client_check', lambda home, d: {
+        'ok': True, 'items': [{'name': '全局 CLAUDE.md', 'ok': True, 'detail': '不存在', 'fix': ''}],
+        'expected_model': 'auto'})
+    monkeypatch.setattr(envcheck, 'gpu_items', lambda req: [
+        {'name': '显卡能力', 'ok': False, 'manual': True, 'detail': 'webgpu', 'fix': '在chrome://gpu确认'}]
+        if req.get('needs_gpu') else [])
+
+
+def test_prepare_runs_everything_and_stops_only_for_manual(client, tmp_path, monkeypatch, git_identity):
+    """一次跑完初始化与准备：脚本素材自动生成；人工素材缺失时停下并说明，放入后继续准备即提交初始快照。"""
+    _prepare_env(client, tmp_path, monkeypatch)
+    mats = [
+        # 生成脚本每执行一次就在计数文件里追加一行，用来确认已就绪的素材不会重跑
+        {'path': 'samples/gen.txt', 'source': 'script', 'url': '', 'purpose': '生成',
+         'script': 'mkdir -p samples && echo ok > samples/gen.txt && echo run >> ../gen-count.txt',
+         'state': 'pending', 'note': ''},
+        {'path': 'samples/manual.bin', 'source': 'manual', 'url': '', 'script': '', 'purpose': '人工',
+         'state': 'pending', 'note': ''},
+    ]
+    tid = new_task(branch='prep', status=pipeline.S_INIT, materials=mats,
+                   env_requirements={'toolchain': [], 'needs_gpu': False, 'external_urls': []})
+    key = client.post(f'/api/tasks/{tid}/action/prepare', json={}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    t = db.get_task(tid)
+    assert t['status'] == pipeline.S_ENV and t['init_sha'] is None
+    assert [m['state'] for m in t['materials']] == ['ready', 'missing']
+    blockers = client.get(f'/api/tasks/{tid}').json()['env_blockers']
+    assert len(blockers) == 1 and 'samples/manual.bin' in blockers[0] and '人工' in blockers[0]
+    # 人工放入素材后继续准备：全部通过，提交初始快照进入待做题，脚本素材不重跑
+    (tmp_path / 'tasks' / 'prep' / 'samples' / 'manual.bin').write_bytes(b'x')
+    key = client.post(f'/api/tasks/{tid}/action/prepare', json={}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    t = db.get_task(tid)
+    assert t['status'] == pipeline.S_DO and len(t['init_sha']) == 40 and t['expected_model'] == 'auto'
+    assert (tmp_path / 'tasks' / 'gen-count.txt').read_text().count('run') == 1
+
+
+def test_prepare_gpu_needs_confirm(client, tmp_path, monkeypatch, git_identity):
+    """依赖显卡的题停下等人工确认，确认后自动继续并提交初始快照；脚本失败时停下并给出原因。"""
+    _prepare_env(client, tmp_path, monkeypatch)
+    tid = new_task(branch='gpu', status=pipeline.S_INIT, materials=[
+        {'path': 'a.txt', 'source': 'script', 'url': '', 'purpose': '', 'script': 'exit 3',
+         'state': 'pending', 'note': ''}],
+        env_requirements={'toolchain': [], 'needs_gpu': True, 'external_urls': []})
+    key = client.post(f'/api/tasks/{tid}/action/prepare', json={}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    blockers = client.get(f'/api/tasks/{tid}').json()['env_blockers']
+    assert any('显卡能力' in b and '人工确认' in b for b in blockers)
+    assert any('a.txt' in b and '退出码 3' in b for b in blockers)
+    # 修好脚本后确认显卡：一次继续准备完成
+    m = db.get_task(tid)['materials']
+    m[0]['script'] = 'echo ok > a.txt'
+    db.update_task(tid, materials=m)
+    key = client.post(f'/api/tasks/{tid}/action/confirm_gpu', json={}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    assert db.get_task(tid)['status'] == pipeline.S_DO
+
+
 def test_wrong_state(client):
     tid = new_task(status=pipeline.S_INIT)
     r = client.post(f'/api/tasks/{tid}/action/collect', json={})

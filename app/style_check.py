@@ -15,6 +15,11 @@ PROMPT_SLANG = [
     '绝了', '救命', '真香', '很爽', '太爽', '好爽', '爽死', '爽翻', '哈哈', '啊啊', 'yyds',
 ]
 
+# prompt 专用：做题环境的套话，环境由流水线保证，不应写进 prompt
+PROMPT_ENV_BOILERPLATE = ['从空仓库', 'ubuntu', 'wsl', 'docker', 'windows浏览器', 'windows 浏览器']
+# prompt 开头的自然说法：我在做一个 我想做个 帮我做一个（帮我写 帮我用也算）
+_PROMPT_OPENING = re.compile(r'^\s*(我在做|我想做|我想要做|帮我)')
+
 CN_PUNCT = set('，。、；：？！“”‘’（）《》【】…—·「」『』〈〉﹏～￥')
 # 任何位置都不允许的英文标点
 ASCII_ALWAYS_BAD = set(',;!?()[]{}"\'`<>')
@@ -103,6 +108,8 @@ FEEDBACK_BANNED = [
 
 # Feedback 专用：工具链或 shell 环境噪声，质检认定不能算作模型的过程问题
 TOOLCHAIN_NOISE = ['git bash', 'gitbash', 'msys', '路径转换']
+# Feedback 篇幅上限：写透一两个关键问题即可，与 style.md「篇幅与取舍」一致
+FEEDBACK_MAX_CHARS = 400
 
 # 代码锚点：带扩展名的文件（可带路径与行号），如 src/parser.py:82 wav.js
 _CODE_ANCHOR = re.compile(r'[a-z0-9_\-/]*[a-z0-9_]\.[a-z][a-z0-9]{0,5}(?::\d+)?(?![a-z0-9])')
@@ -133,6 +140,10 @@ def check_feedback_content(text: str, score=None) -> list[dict]:
         issues.append(_issue(f'文中给{stmts[-1]}分 与评分{int(score)}分不一致', text, m.start()))
     if not _CODE_ANCHOR.search(low):
         issues.append({'rule': '没有代码锚点 至少写到具体文件 函数或行号', 'excerpt': text[:24]})
+    n = len(text.strip())
+    if n > FEEDBACK_MAX_CHARS:
+        issues.append({'rule': f'篇幅{n}字 超过{FEEDBACK_MAX_CHARS}字 只写最关键的一两个问题',
+                       'excerpt': text[FEEDBACK_MAX_CHARS - 12:FEEDBACK_MAX_CHARS + 12]})
     return issues
 
 
@@ -146,6 +157,12 @@ def check_prompt(text: str) -> list[dict]:
         i = lowered.find(w)
         if i >= 0:
             issues.append(_issue(f'刻意口语 {w}', text, i))
+    for w in PROMPT_ENV_BOILERPLATE:
+        i = lowered.find(w)
+        if i >= 0:
+            issues.append(_issue(f'环境套话 {w} 不用写进prompt', text, i))
+    if text.strip() and not _PROMPT_OPENING.match(text):
+        issues.append({'rule': '开头不自然 应以我在做一个 我想做个 帮我做一个开头', 'excerpt': text.strip()[:24]})
     return _dedupe(issues)
 
 

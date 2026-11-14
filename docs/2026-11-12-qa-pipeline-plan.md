@@ -98,6 +98,8 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 > 状态（2026-11-14 晚，续）：提交表弹窗标出返修：`/api/submission` 每行附 `rework`（最近一轮的轮次、状态、改过的格到原值），页面高亮改过的格、悬停看原值、可「复制改动格」。59 个测试通过，临时实例截图核对过。
 >
 > 状态（2026-11-14 晚，再续）：题目详情的质检卡片改为每轮一张可折叠卡片（`details.insp`，默认只展开最近一轮，状态记在 localStorage），「提交表要改的格」移入各轮卡片且只列列名；接口去掉 `rework_changes`，改由 `pipeline.inspections_view` 给每轮附 `changed_columns`（前一轮对比下一轮登记时的快照，最后一轮对比当前内容）。60 个测试通过。
+>
+> 状态（2026-11-15）：① 准备环境自动化：`start_prepare` 一次跑完初始化、工具链、素材（下载与生成脚本自动执行，已就绪只核对）、显卡、外网、客户端体检，无待处理项时直接提交初始快照进待做题；有待处理项停在待准备环境，`env_blockers` 每项带处理方式；`confirm_gpu` 确认后自动继续；去掉 start_init、start_fetch_materials、start_run_script、confirm_material、start_envcheck、start_finalize_env 及对应接口和按钮；RETRY 中待初始化、待准备环境都走 start_prepare。② qa-review 精简：Feedback 150 到 300 字、上限 400（style_check 新增篇幅门禁，#11 旧 Feedback 692 字会在页面标红），只写一个过程问题和一到两个产物问题；录屏 3 到 5 步、只录 Feedback 写到的内容。③ qa-gen prompt：开头在「我在做一个／我想做个／帮我做一个」中轮换，不写环境套话；check_prompt 新增环境套话与开头说法两项提示（只标红不卡流程）。64 个测试通过。
 
 1. 冒烟测试（已通过，脚本在 `_verify/smoke/`）：
    - WSL 中调用 Windows codex：`echo 回复ok | codex.exe exec --json --ephemeral --ignore-user-config --skip-git-repo-check -m gpt-6.1-sol -C E:\...\pipeline-agent -`，确认事件流可逐行读取、运行后 `codex login status` 仍为已登录、Codex 客户端仍在线、`~/.codex/sessions` 无新增。

@@ -102,7 +102,7 @@ def gpu_items(env_req: dict) -> list[dict]:
     hint = out if code == 0 and out else '未取到 OpenGL 信息（可安装 mesa-utils 后执行 glxinfo -B）'
     return [{'name': '显卡能力', 'ok': False, 'manual': True,
              'detail': f"{env_req.get('gpu_note', '')} 本机 {hint}",
-             'fix': 'WebGPU 题在 Windows Chrome 打开 chrome://gpu 确认；OpenGL 题确认版本满足后勾选'}]
+             'fix': 'WebGPU 题在 Windows Chrome 打开 chrome://gpu 确认；OpenGL 题确认版本满足；确认后点「确认显卡能力并继续」'}]
 
 
 def net_check(urls: list[str], timeout: int = 20) -> list[dict]:

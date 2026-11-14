@@ -199,127 +199,112 @@ def start_gen(params: dict) -> str:
 
 # ---------- 初始化与准备环境 ----------
 
-def start_init(task_id: int) -> str:
-    t = need(db.get_task(task_id), S_INIT)
-
-    def work(log, run_key, stop):
-        gitops.init_task_dir(task_dir(t), t['branch'], config.load()['github_repo'], log=log)
-        db.update_task(task_id, status=S_ENV, failed_from=None, last_error=None)
-
-    return jobs.submit('init', task_id, work)
-
-
-def start_fetch_materials(task_id: int) -> str:
-    t = need(db.get_task(task_id), S_ENV)
-
-    def work(log, run_key, stop):
-        d = task_dir(t)
-        mats = []
-        for m in db.get_task(task_id)['materials'] or []:
-            if m.get('source') == 'url' and m.get('url') and m.get('state') != 'ready':
-                try:
-                    m = materials.download(d, m, log)
-                except Exception as e:  # noqa: BLE001 单个素材失败不影响其他
-                    m = {**m, 'state': 'failed', 'note': str(e)[:300]}
-            elif m.get('state') != 'pending':
-                m = materials.check(d, m) if m.get('state') in ('ready', 'confirmed') else m
-            mats.append(m)
-            log(f"{m['path']} {m['state']} {m.get('note', '')}")
-        db.update_task(task_id, materials=mats)
-
-    return jobs.submit('materials', task_id, work)
+def _prepare_material(d: Path, m: dict, log) -> dict:
+    """准备单个素材：已就绪的只核对；下载类自动下载，脚本类自动执行；人工素材只检查是否已放入。"""
+    if m.get('state') in ('ready', 'confirmed'):
+        c = materials.check(d, m)
+        if c['state'] == 'ready':
+            return {**c, 'state': m['state']}
+        m = c  # 已就绪的文件不见了，按来源重新获取
+    src = m.get('source')
+    try:
+        if src == 'url' and m.get('url'):
+            return materials.download(d, m, log)
+        if src == 'script' and m.get('script'):
+            return materials.run_script(d, m, log)
+    except Exception as e:  # noqa: BLE001 单个素材失败不影响其他素材和检查
+        return {**m, 'state': 'failed', 'note': str(e)[:300]}
+    c = materials.check(d, m)
+    if c['state'] == 'missing':
+        c['note'] = '需要人工放到做题目录对应路径'
+    return c
 
 
-def start_run_script(task_id: int, idx: int) -> str:
-    t = need(db.get_task(task_id), S_ENV)
-    mats = t['materials'] or []
-    if not 0 <= idx < len(mats) or not mats[idx].get('script'):
-        raise ActionError('该素材没有生成脚本')
+def start_prepare(task_id: int) -> str:
+    """初始化并准备环境：一次跑完初始化、工具链、素材、外网、做题客户端检查与初始快照提交。
 
-    def work(log, run_key, stop):
-        cur = db.get_task(task_id)['materials']
-        cur[idx] = materials.run_script(task_dir(t), cur[idx], log)
-        db.update_task(task_id, materials=cur)
-
-    return jobs.submit('material-script', task_id, work)
-
-
-def confirm_material(task_id: int, idx: int) -> dict:
-    t = need(db.get_task(task_id), S_ENV)
-    mats = t['materials'] or []
-    if not 0 <= idx < len(mats):
-        raise ActionError('素材序号无效')
-    m = materials.check(task_dir(t), mats[idx])
-    if m['state'] != 'ready':
-        raise ActionError(f"素材检查未通过：{m['note']}")
-    mats[idx] = {**m, 'state': 'confirmed'}
-    return db.update_task(task_id, materials=mats)
-
-
-def start_envcheck(task_id: int) -> str:
-    t = need(db.get_task(task_id), S_ENV)
+    全部通过直接进入待做题；有需要人工处理的项时停在待准备环境，处理完再次执行即可（已就绪的素材只核对不重跑）。
+    """
+    need(db.get_task(task_id), S_INIT, S_ENV)
 
     def work(log, run_key, stop):
         cfg = config.load()
+        t = db.get_task(task_id)
+        d = task_dir(t)
+        if t['status'] == S_INIT:
+            gitops.init_task_dir(d, t['branch'], cfg['github_repo'], log=log)
+            t = db.update_task(task_id, status=S_ENV, failed_from=None, last_error=None)
+            log(f'做题目录已初始化 {d}')
         req = t['env_requirements'] or {}
+        # 先查工具链，素材生成脚本可能依赖这些工具
         items = envcheck.toolchain_check(req.get('toolchain') or [])
         old_gpu = {i['name']: i for i in (t['env_check'] or []) if i.get('manual')}
         for g in envcheck.gpu_items(req):
             if old_gpu.get(g['name'], {}).get('ok'):
                 g['ok'] = True
             items.append(g)
+        mats = []
+        for m in t['materials'] or []:
+            m = _prepare_material(d, m, log)
+            log(f"素材 {m['path']} {m['state']} {m.get('note', '')}")
+            mats.append(m)
         net = envcheck.net_check(req.get('external_urls') or [])
-        client = envcheck.client_check(Path(cfg['claude_home']).expanduser(), str(task_dir(t)))
+        client = envcheck.client_check(Path(cfg['claude_home']).expanduser(), str(d))
         for i in items + net + client['items']:
             log(f"{'通过' if i['ok'] else '不通过'} {i['name']} {i['detail']}")
-        db.update_task(task_id, env_check=items, net_check=net, client_check=client,
-                       expected_model=client['expected_model'])
-
-    return jobs.submit('envcheck', task_id, work)
-
-
-def confirm_gpu(task_id: int) -> dict:
-    t = need(db.get_task(task_id), S_ENV)
-    items = t['env_check'] or []
-    for i in items:
-        if i.get('manual'):
-            i['ok'] = True
-    return db.update_task(task_id, env_check=items)
-
-
-def env_blockers(t: dict) -> list[str]:
-    out = []
-    for m in t['materials'] or []:
-        if m.get('state') not in ('ready', 'confirmed'):
-            out.append(f"素材未就绪 {m['path']}（{m.get('state')}）")
-    if t['env_check'] is None or t['client_check'] is None:
-        out.append('尚未执行环境检查')
-    for i in (t['env_check'] or []) + (t['net_check'] or []):
-        if not i['ok']:
-            out.append(f"检查未通过 {i['name']}")
-    for i in (t['client_check'] or {}).get('items', []):
-        if not i['ok']:
-            out.append(f"做题客户端 {i['name']}")
-    if t['status'] == S_ENV and task_dir(t).exists():
-        big = gitops.large_files(task_dir(t))
-        out += [f'文件超过 100MB {p}（{mb}MB）' for p, mb in big['block']]
-    return out
-
-
-def start_finalize_env(task_id: int) -> str:
-    t = need(db.get_task(task_id), S_ENV)
-    blockers = env_blockers(t)
-    if blockers:
-        raise ActionError('；'.join(blockers[:8]))
-
-    def work(log, run_key, stop):
-        d = task_dir(t)
+        t = db.update_task(task_id, materials=mats, env_check=items, net_check=net, client_check=client,
+                           expected_model=client['expected_model'])
+        blockers = env_blockers(t)
+        if blockers:
+            log('需要人工处理，处理完点「继续准备」：\n' + '\n'.join(blockers))
+            return
         sha = gitops.commit_initial(d, t['branch'], log=log)
         db.update_task(task_id, init_sha=sha, ignored_before=gitops.ignored_entries(d),
                        status=S_DO, failed_from=None, last_error=None)
         log(f'初始快照 {config.permalink(sha)}')
 
-    return jobs.submit('finalize-env', task_id, work)
+    return jobs.submit('prepare', task_id, work)
+
+
+def confirm_gpu(task_id: int) -> str:
+    """人工确认显卡能力后继续准备（没有其他问题时直接提交初始快照）。"""
+    t = need(db.get_task(task_id), S_ENV)
+    items = t['env_check'] or []
+    for i in items:
+        if i.get('manual'):
+            i['ok'] = True
+    db.update_task(task_id, env_check=items)
+    return start_prepare(task_id)
+
+
+_MATERIAL_HINT = {
+    'missing': '文件不存在',
+    'failed': '获取失败 看运行日志里的报错',
+    'too_large': '超过 100MB 换小一点的素材或改脚本参数',
+    'pending': '尚未准备',
+}
+
+
+def env_blockers(t: dict) -> list[str]:
+    """需要人工处理的项，每项带上处理方式。"""
+    out = []
+    for m in t['materials'] or []:
+        st = m.get('state')
+        if st not in ('ready', 'confirmed'):
+            out.append(f"素材 {m['path']} {_MATERIAL_HINT.get(st, st)} {m.get('note', '')}".strip())
+    if t['env_check'] is None or t['client_check'] is None:
+        out.append('尚未执行环境检查')
+    for i in (t['env_check'] or []) + (t['net_check'] or []):
+        if not i['ok']:
+            label = '需要人工确认' if i.get('manual') else '不通过'
+            out.append(f"{i['name']} {label}" + (f" 处理 {i['fix']}" if i.get('fix') else ''))
+    for i in (t['client_check'] or {}).get('items', []):
+        if not i['ok']:
+            out.append(f"做题客户端 {i['name']} {i['detail']}" + (f" 处理 {i['fix']}" if i.get('fix') else ''))
+    if t['status'] == S_ENV and task_dir(t).exists():
+        big = gitops.large_files(task_dir(t))
+        out += [f'文件超过 100MB {p}（{mb}MB）' for p, mb in big['block']]
+    return out
 
 
 # ---------- 做题与重做 ----------
@@ -714,7 +699,8 @@ def start_rework(task_id: int) -> str:
 
 # ---------- 失败重试 ----------
 
-RETRY = {S_INIT: start_init, S_COLLECT: start_collect, S_REVIEW: start_review, S_REWORK: start_rework}
+RETRY = {S_INIT: start_prepare, S_ENV: start_prepare, S_COLLECT: start_collect, S_REVIEW: start_review,
+         S_REWORK: start_rework}
 
 
 def retry(task_id: int, summary: str = ''):

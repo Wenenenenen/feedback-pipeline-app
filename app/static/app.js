@@ -363,9 +363,12 @@ async function showTask(id) {
   const S = t.status;
   const editableInfo = ['待初始化', '待准备环境'].includes(S);
   const actions = [];
-  if (S === '待初始化') actions.push(btn('初始化做题目录', 'init', 'primary'));
-  if (S === '待准备环境') actions.push(btn('自动下载素材', 'fetch_materials'), btn('执行环境检查', 'envcheck'),
-    btn('确认显卡能力', 'confirm_gpu'), btn('完成准备并提交初始快照', 'finalize_env', 'primary'));
+  // 初始化与准备环境一次跑完，只在需要人工处理时停在待准备环境
+  if (S === '待初始化') actions.push(btn('初始化并准备环境', 'prepare', 'primary'));
+  if (S === '待准备环境') {
+    actions.push(btn('继续准备', 'prepare', 'primary'));
+    if ((t.env_check || []).some(i => i.manual && !i.ok)) actions.push(btn('确认显卡能力并继续', 'confirm_gpu'));
+  }
   if (S === '待做题') actions.push(btn('做题完成', 'mark_done', 'primary'), btn('重做', 'redo', 'danger'));
   if (S === '待收集') actions.push(btn('开始收集', 'collect', 'primary'), btn('重做', 'redo', 'danger'));
   if (S === '待验收') actions.push(btn('开始验收', 'review', 'primary'));
@@ -377,13 +380,11 @@ async function showTask(id) {
   }
   actions.push(btn('删除题目', 'delete', 'danger push'));
 
-  const mats = (t.materials || []).map((m, i) => `<tr>
+  const mats = (t.materials || []).map(m => `<tr>
       <td><span class="mono">${esc(m.path)}</span><br><span class="muted">${esc(m.purpose)}</span></td>
       <td>${esc(m.source)}${m.url ? `<br><a href="${esc(m.url)}" target="_blank">${esc(m.url)}</a>` : ''}</td>
       <td>${esc(m.state)} <span class="muted">${esc(m.note || '')}</span><br><span class="muted">${esc(m.license || '')}</span></td>
-      <td>${m.script ? fold('查看脚本', codeBlock(m.script)) : ''}
-        <div class="chip-stack">${S === '待准备环境' && m.script ? `<button data-act="run_script" data-idx="${i}">执行脚本</button>` : ''}
-        ${S === '待准备环境' ? `<button data-act="confirm_material" data-idx="${i}">确认已就位</button>` : ''}</div></td></tr>`).join('');
+      <td>${m.script ? fold('查看脚本', codeBlock(m.script)) : ''}</td></tr>`).join('');
 
   const summary = t.traj_summary;
   const reviewEditable = S === '待查验';
@@ -408,7 +409,7 @@ async function showTask(id) {
       <div class="meta-line">${esc(t.domain)} / ${esc(t.subdomain)} · ${esc(t.difficulty)} · ${esc(t.lang_framework || '技术栈未定')}</div>
       ${stepper(t)}
       ${t.last_error ? `<div class="error-box">${esc(t.last_error)}</div>` : ''}
-      ${t.env_blockers?.length ? `<div class="error-box">尚不能提交初始快照：\n${esc(t.env_blockers.join('\n'))}</div>` : ''}
+      ${t.env_blockers?.length ? `<div class="error-box">需要人工处理 处理完点「继续准备」：\n${esc(t.env_blockers.join('\n'))}</div>` : ''}
       <div class="actions">${actions.join('')}
         <span class="fold-all"><button type="button" class="ghost" data-fold-all="1">全部展开</button><button type="button" class="ghost" data-fold-all="0">全部折叠</button></span></div>
     </div>
@@ -416,7 +417,7 @@ async function showTask(id) {
     ${inspectHtml}
 
     ${panel(t, 'info', '题目信息', `<div class="fields">
-      ${field('User Prompt', `${issuesHtml(t.prompt_issues).replace('口吻检查通过', '无 AI 化或刻意口语表达')}
+      ${field('User Prompt', `${issuesHtml(t.prompt_issues).replace('口吻检查通过', 'prompt 检查通过')}
         <textarea id="f-user_prompt" rows="9" ${ro(editableInfo)}>${esc(t.user_prompt)}</textarea>`)}
       ${field('所属领域', plain(`${t.domain} / ${t.subdomain}`))}
       ${field('任务类型', plain(t.task_type))}

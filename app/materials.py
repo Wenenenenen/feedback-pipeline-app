@@ -29,7 +29,7 @@ def download(task_dir: Path, item: dict, log) -> dict:
 
 
 def run_script(task_dir: Path, item: dict, log, timeout: int = 1800) -> dict:
-    """执行生成脚本（由人工在页面确认后触发），工作目录为做题目录。"""
+    """执行生成脚本（准备环境时自动执行），工作目录为做题目录。"""
     log(f"执行生成脚本 {item['path']}\n{item['script']}")
     p = subprocess.run(['bash', '-ic', item['script']], cwd=task_dir, capture_output=True,
                        text=True, timeout=timeout, encoding='utf-8', errors='replace',

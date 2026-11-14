@@ -71,7 +71,22 @@ def test_prompt_rejects_forced_slang():
     assert any('很爽' in i['rule'] for i in check_prompt('做完用起来很爽就行。'))
     assert any('yyds' in i['rule'] for i in check_prompt('ffmpeg YYDS，就用它。'))
     # 技术描述里的「崩溃」不算刻意口语
-    assert check_prompt('服务进程崩溃后要能自动续跑。') == []
+    assert check_prompt('帮我做个服务，进程崩溃后要能自动续跑。') == []
+
+
+def test_prompt_opening_and_env_boilerplate():
+    """开头要像真实用户直接说要做什么；做题环境的套话不应写进 prompt。"""
+    for ok in ('我在做一个剖面工具，', '我想做个直播推流服务，', '帮我做一个对轨工具，'):
+        assert check_prompt(ok + '要支持多房间。') == [], ok
+    rules = [i['rule'] for i in check_prompt('我负责树脂打印模型的出厂检查，需要看清空腔。')]
+    assert any('开头不自然' in r for r in rules)
+    text = ('我想做个剖面工具。请从空仓库做本地网页，用Python在Ubuntu-24.04的WSL启动，'
+            'Windows浏览器访问localhost，不用Docker。')
+    rules = [i['rule'] for i in check_prompt(text)]
+    for w in ('从空仓库', 'ubuntu', 'wsl', 'docker', 'windows浏览器'):
+        assert any(f'环境套话 {w}' in r for r in rules), w
+    # 离线这类属于需求本身的约束可以写
+    assert check_prompt('帮我做一个现场用的工具，现场没网，装好以后要能离线用。') == []
 
 
 def content_rules(text, score=None):
@@ -92,6 +107,16 @@ def test_feedback_content_requires_score_and_anchor():
     assert any('建议修复' in r for r in rs)
     # 文中分数与评分不一致
     assert any('不一致' in r for r in content_rules('wav.js没校验数据长度 给4分', 3))
+
+
+def test_feedback_length_limit():
+    """超过 400 字的 Feedback 要求精简；400 字以内不拦。"""
+    base = ('模型修改后只跑了正常路径 没有运行tests/test_error_handling.py 最终提交里src/parser.py:82的'
+            'parse_response遇到空响应直接调用response.json 批量导入在该条记录处整体中止 问题仍在 ')
+    ok = base + '给3分'
+    assert not any('篇幅' in r for r in content_rules(ok, 3))
+    long = base * 4 + '给3分'
+    assert len(long) > 400 and any('篇幅' in r for r in content_rules(long, 3))
 
 
 def test_feedback_content_rejects_template_phrases():

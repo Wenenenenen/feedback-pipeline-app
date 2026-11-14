@@ -124,13 +124,9 @@ def gen(body: dict = Body(...)):
 
 
 ACTIONS = {
-    'init': lambda i, b: P.start_init(i),
-    'fetch_materials': lambda i, b: P.start_fetch_materials(i),
-    'run_script': lambda i, b: P.start_run_script(i, int(b['idx'])),
-    'confirm_material': lambda i, b: P.confirm_material(i, int(b['idx'])),
-    'envcheck': lambda i, b: P.start_envcheck(i),
+    # 初始化并准备环境一次跑完，只在需要人工处理时停下
+    'prepare': lambda i, b: P.start_prepare(i),
     'confirm_gpu': lambda i, b: P.confirm_gpu(i),
-    'finalize_env': lambda i, b: P.start_finalize_env(i),
     'redo': lambda i, b: P.start_redo(i),
     'mark_done': lambda i, b: P.mark_done(i),
     'collect': lambda i, b: P.start_collect(i, b.get('summary', '')),
