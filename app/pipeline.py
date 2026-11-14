@@ -52,8 +52,7 @@ def task_dir(t: dict) -> Path:
 
 def unc(path: Path) -> str:
     """WSL 路径转换为 Windows 侧可读的 UNC 路径。"""
-    distro = config.load()['wsl_distro']
-    return f'\\\\wsl.localhost\\{distro}' + str(path).replace('/', '\\')
+    return config.unc(path)
 
 
 def need(t: dict | None, *statuses: str) -> dict:
@@ -96,6 +95,9 @@ def view(t: dict) -> dict:
     """附加页面需要的派生字段。"""
     t = dict(t)
     t['feedback_issues'] = feedback_issues(t.get('feedback'), t.get('delivery_score'))
+    t['record_issues'] = record_issues(t.get('record_steps'))
+    # 轨迹要在 Windows 文件选择框里上传，页面展示 Windows 侧路径
+    t['trajectory_win'] = config.unc(t['trajectory_path']) if t.get('trajectory_path') else ''
     t['prompt_issues'] = style_check.check_prompt(t.get('user_prompt'))
     t['due_flag'] = due_flag(t)
     t['init_permalink'] = config.permalink(t.get('init_sha'))
@@ -407,6 +409,34 @@ def _verify_lines(t: dict, verify_dir: Path) -> list[str]:
             f'可用端口 {p0}-{p1}']
 
 
+def _record_lines(t: dict) -> list[str]:
+    """录屏环境说明，验收与返修共用：录屏步骤是人在录屏目录的终端里照着执行的。"""
+    rdir = config.path_of('record_root') / t['branch']
+    return ['## 录屏环境',
+            f'录屏目录 {rdir}（产物快照的全新克隆，不含依赖）',
+            '录屏时人在 WSL 终端里先 cd 到录屏目录，再照录屏步骤逐条粘贴执行；浏览器用 Windows 本机浏览器按 localhost 加端口访问',
+            '录屏步骤的命令直接在这个终端里执行：用相对路径，不加 wsl.exe 或 bash -ic 包装，不出现验收目录、修复目录的路径']
+
+
+def record_issues(steps) -> list[dict]:
+    """录屏步骤的规则检查：命令要能在录屏目录的终端里直接执行，操作要人工能快速完成。"""
+    work_dirs = '|'.join(re.escape(config.path_of(k).name) for k in ('verify_root', 'tasks_root'))
+    rules = [
+        (r'wsl(\.exe)?\s+-d|bash\s+-ic', '带了 wsl.exe 或 bash -ic 包装 录屏时直接在录屏目录的终端里执行'),
+        (rf'/({work_dirs})/', '用了验收目录或做题目录的路径 应在录屏目录下用相对路径'),
+        (r'(点击|点选|单击|点)[^。；;\n]{0,10}(像素|坐标)\s*[（(]?\s*\d+\s*[,，\s]\s*\d+',
+         '要求手动点击精确的像素坐标 人工做不到 应改成可粘贴的控制台脚本或按画面上可见的元素描述'),
+    ]
+    issues = []
+    for n, s in enumerate(steps or [], 1):
+        text = ' '.join(str(s.get(k) or '') for k in ('action', 'command', 'expect'))
+        for pat, rule in rules:
+            m = re.search(pat, text)
+            if m:
+                issues.append({'rule': f'第{n}步 {rule}', 'excerpt': m.group(0)[:60]})
+    return issues
+
+
 def _review_input(t: dict, verify_dir: Path, run_key: str = '预览') -> str:
     env_lines = [f"{'通过' if i['ok'] else '不通过'} {i['name']} {i['detail']}"
                  for i in (t['env_check'] or []) + (t['net_check'] or [])]
@@ -425,6 +455,7 @@ def _review_input(t: dict, verify_dir: Path, run_key: str = '预览') -> str:
         # 素材生成脚本不在产物仓库里，验收需要换参数重新生成时从这里取
         '', '## 素材清单与生成脚本', *(_materials_lines(t) or ['无']),
         '', *_verify_lines(t, verify_dir),
+        '', *_record_lines(t),
         '', '## 轨迹',
         f"完整轨迹 {unc(Path(t['trajectory_path']))}",
         f"SessionID {t['session_id']} 「继续」次数 {t['continue_count']}",
@@ -446,6 +477,7 @@ def start_review(task_id: int) -> str:
         r = codex_runner.run_skill('qa-review', text, run_key, log, stop)
         issues = feedback_issues(r['feedback'], r['delivery_score'])
         log(f"评分 {r['delivery_score']} 口吻与内容问题 {len(issues)} 条 "
+            f"录屏步骤问题 {len(record_issues(r['record_steps']))} 条 "
             f"自检一致 {r['self_check']['score_consistent']}")
         db.update_task(task_id, evidence=r['evidence'], delivery_score=r['delivery_score'],
                        score_reason=r['score_reason'], feedback=r['feedback'],
@@ -633,6 +665,7 @@ def _rework_input(t: dict, insp: dict, verify_dir: Path, fix_dir: Path, repo_dir
         f'WSL 路径 {fix_dir}',
         f'Windows 读取路径 {unc(fix_dir)}',
         '当前产物快照的另一份全新克隆 只用来放对产物的修改 后端会把这里的改动提交并推送为新的产物快照',
+        '', *_record_lines(t),
         '', '## 轨迹',
         f"完整轨迹 {unc(Path(t['trajectory_path']))}",
         f"WSL 路径 {t['trajectory_path']}（质检说的第N行指这个 jsonl 文件的物理行号）",

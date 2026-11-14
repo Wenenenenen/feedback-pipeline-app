@@ -175,9 +175,13 @@ def test_submission_rows(client):
     assert [r['branch'] for r in body['rows']] == ['done-task']
     cells = {c['name']: c['value'] for c in body['rows'][0]['cells']}
     assert [c['name'] for c in body['rows'][0]['cells']] == submission.COLUMNS
-    assert cells['序号'] == '11' and cells['轨迹文件'] == '/data/t.jsonl'
+    # 轨迹文件写成 Windows 侧路径，上传文件的两格点击时复制所在文件夹
+    assert cells['序号'] == '11' and cells['轨迹文件'] == '\\\\wsl.localhost\\Ubuntu-24.04\\data\\t.jsonl'
     assert cells['初始环境快照'] == 'https://github.com/org/repo/commit/' + 'a' * 40
     assert cells['运行录屏'] == 'E:\\r\\a.mp4' and cells['交付完整性'] == '3'
+    copies = {c['name']: c.get('copy') for c in body['rows'][0]['cells']}
+    assert copies['轨迹文件'] == '\\\\wsl.localhost\\Ubuntu-24.04\\data\\'
+    assert copies['运行录屏'] == 'E:\\r\\' and copies['分支'] is None
     # 勾选时按勾选的题目返回，已编号的排在前面
     body = client.post('/api/submission', json={'ids': [other, done]}).json()
     assert [r['branch'] for r in body['rows']] == ['done-task', 'check-task']
@@ -388,6 +392,34 @@ def fake_rework(monkeypatch, result: dict, new_sha: str | None = None):
     return seen
 
 
+def test_static_no_cache(client):
+    """页面资源要求浏览器每次确认更新，避免改了样式还用旧缓存。"""
+    r = client.get('/style.css')
+    assert r.status_code == 200 and r.headers['cache-control'] == 'no-cache'
+    assert 'height: calc(100vh - 48px)' in r.text
+
+
+def test_record_issues(client):
+    """录屏步骤要能在录屏目录终端里直接执行，且不要求手动点精确像素。"""
+    bad = [
+        {'action': '后台启动服务', 'expect': '页面可见',
+         'command': "wsl.exe -d Ubuntu-24.04 --cd /home/u/jianzhi/feedback-verify/demo -- bash -ic 'bash scripts/start.sh'"},
+        {'action': '查看像素', 'command': '浏览器选择gradient.json 点击像素192 300 查看RGBA', 'expect': '数值偏差'},
+    ]
+    rules = [i['rule'] for i in pipeline.record_issues(bad)]
+    assert any(r.startswith('第1步') and 'wsl.exe' in r for r in rules)
+    assert any(r.startswith('第1步') and '路径' in r for r in rules)
+    assert any(r.startswith('第2步') and '像素' in r for r in rules)
+    good = [
+        {'action': '后台启动服务', 'command': 'nohup bash scripts/start.sh 20400 > .qa/record.log 2>&1 &',
+         'expect': '浏览器打开 localhost:20400 可见场景下拉框'},
+        {'action': '在场景下拉框选 gradient.json 后在控制台粘贴脚本选中像素',
+         'command': "pick(192, 300)", 'expect': '面板显示红分量 0.6635'},
+    ]
+    assert pipeline.record_issues(good) == []
+    assert pipeline.record_issues(None) == []
+
+
 def test_rework_flow_with_fake_codex(client, monkeypatch):
     """粘贴质检原文即由 AI 处理，处理完直接回到已完成，列出提交表要改的格，序号与录屏沿用。"""
     tid = done_task(lang_framework='Node.js 22 + 原生JavaScript')
@@ -398,6 +430,7 @@ def test_rework_flow_with_fake_codex(client, monkeypatch):
     key = client.post(f'/api/tasks/{tid}/action/rework', json={'text': REWORK_TEXT}).json()['run_key']
     assert wait_run(key)['status'] == 'success'
     assert seen['skill'] == 'qa-rework' and '本次质检（第1轮）' in seen['text']
+    assert '## 录屏环境' in seen['text'] and 'feedback-record' in seen['text']
     assert '原轨第12行' in seen['text'] and '修复目录' in seen['text'] and GOOD_FEEDBACK in seen['text']
     t = db.get_task(tid)
     assert t['status'] == pipeline.S_DONE and t['feedback'] == NEW_FB

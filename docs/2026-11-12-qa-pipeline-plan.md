@@ -101,6 +101,8 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 >
 > 状态（2026-11-15）：① 准备环境自动化：`start_prepare` 一次跑完初始化、工具链、素材（下载与生成脚本自动执行，已就绪只核对）、显卡、外网、客户端体检，无待处理项时直接提交初始快照进待做题；有待处理项停在待准备环境，`env_blockers` 每项带处理方式；`confirm_gpu` 确认后自动继续；去掉 start_init、start_fetch_materials、start_run_script、confirm_material、start_envcheck、start_finalize_env 及对应接口和按钮；RETRY 中待初始化、待准备环境都走 start_prepare。② qa-review 精简：Feedback 150 到 300 字、上限 400（style_check 新增篇幅门禁，#11 旧 Feedback 692 字会在页面标红），只写一个过程问题和一到两个产物问题；录屏 3 到 5 步、只录 Feedback 写到的内容。③ qa-gen prompt：开头在「我在做一个／我想做个／帮我做一个」中轮换，不写环境套话；check_prompt 新增环境套话与开头说法两项提示（只标红不卡流程）。64 个测试通过。
 
+> 状态（2026-11-14 夜）：① 收集补交被忽略文件时中文路径被 git 转义导致 `git add` 失败：`gitops.git` 统一加 `-c core.quotepath=off`，列被忽略文件改用 `ls-files -z`，旧任务 `ignored_before` 里的转义路径经 `_unquote` 还原后比较。② 录屏步骤：验收与返修输入新增「录屏环境」（`_record_lines`：录屏目录、命令在录屏目录终端直接执行、不加 wsl.exe 包装），qa-review 与 qa-rework skill 补写法要求（不点精确像素坐标，需要时给控制台脚本）；`pipeline.record_issues` 在录屏卡片标出带包装、用验收或做题目录路径、要求点精确像素的步骤（只提示不卡流程）。alpha-layer-inspector 的录屏步骤已手工改写并实测（控制台脚本先把画布按原始尺寸显示再派发点击）。③ 轨迹文件在页面与提交表按 UNC 路径展示（`config.unc`），提交表轨迹文件与运行录屏两格点击复制所在文件夹（`cell.copy`，`config.win_parent`）；提交表弹窗高度固定。④ 非 `/api/` 响应加 `Cache-Control: no-cache`，避免前端改动被浏览器缓存。68 个测试通过。
+
 1. 冒烟测试（已通过，脚本在 `_verify/smoke/`）：
    - WSL 中调用 Windows codex：`echo 回复ok | codex.exe exec --json --ephemeral --ignore-user-config --skip-git-repo-check -m gpt-6.1-sol -C E:\...\pipeline-agent -`，确认事件流可逐行读取、运行后 `codex login status` 仍为已登录、Codex 客户端仍在线、`~/.codex/sessions` 无新增。
    - 建一个最小 skill + schema，确认 `$skill名` 能触发、`-o` 输出符合 schema。

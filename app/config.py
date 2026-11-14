@@ -21,6 +21,20 @@ def win_path(p) -> str:
     return str(p)
 
 
+def unc(path) -> str:
+    """WSL 路径转换为 Windows 侧可读的 UNC 路径，如 \\\\wsl.localhost\\Ubuntu-24.04\\home\\...；挂载盘路径转为盘符路径。"""
+    s = str(path)
+    if s.startswith('/mnt/'):
+        return win_path(s)
+    return f"\\\\wsl.localhost\\{load()['wsl_distro']}" + s.replace('/', '\\')
+
+
+def win_parent(path: str) -> str:
+    """Windows 路径的父目录，带结尾反斜杠，方便在文件选择框里直接定位。"""
+    s = str(path or '').rstrip('\\')
+    return s.rsplit('\\', 1)[0] + '\\' if '\\' in s else ''
+
+
 # Claude Code 2.1.322 自带的 skill（来自干净做题轨迹的 skill_listing）
 BUILTIN_SKILLS = [
     'dataviz', 'update-config', 'keybindings-help', 'code-review', 'simplify',

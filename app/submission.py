@@ -35,6 +35,8 @@ COLUMNS = ['序号', '分支', 'User Prompt', '所属领域', '子方向', '任�
 
 # 页面上占满整行的长字段
 WIDE = {'User Prompt', 'Feedback', '备注'}
+# 需要上传文件的列：单元格点击复制文件所在文件夹
+UPLOAD_COLUMNS = {'轨迹文件', '运行录屏'}
 
 
 def _s(v) -> str:
@@ -50,12 +52,20 @@ def row(t: dict) -> list[dict]:
         'Harness 版本': t['harness_version'], '操作系统': t['os'],
         '环境可复现等级': t['reproducibility'], '初始环境快照': config.permalink(t['init_sha']),
         'SessionID': t['session_id'], 'TurnID/PromptID': t['prompt_id'],
-        # 轨迹文件即收集环节留存的待上传轨迹
-        '轨迹文件': t['trajectory_path'], '产物快照': config.permalink(t['artifact_sha']),
+        # 轨迹文件即收集环节留存的待上传轨迹，写成 Windows 侧路径方便上传时定位
+        '轨迹文件': config.unc(t['trajectory_path']) if t['trajectory_path'] else '',
+        '产物快照': config.permalink(t['artifact_sha']),
         '运行录屏': t['recording_link'], '交付完整性': t['delivery_score'],
         'Feedback': t['feedback'], '备注': t['remark'],
     }
-    return [{'name': c, 'value': _s(vals[c]), 'wide': c in WIDE} for c in COLUMNS]
+    cells = []
+    for c in COLUMNS:
+        cell = {'name': c, 'value': _s(vals[c]), 'wide': c in WIDE}
+        # 要上传的文件点单元格时复制所在文件夹，文件选择框里粘贴即可定位
+        if c in UPLOAD_COLUMNS and cell['value']:
+            cell['copy'] = config.win_parent(cell['value'])
+        cells.append(cell)
+    return cells
 
 
 # ---------- 录屏文件 ----------

@@ -210,9 +210,11 @@ async function openSubmission() {
       </summary>
       <div class="sub-grid">${r.cells.map(c => {
         const isChanged = c.name in changed;
-        const tip = isChanged ? `返修改过 原值：${changed[c.name] || '空'}\n点击复制新值` : '点击复制';
+        // 上传文件的格复制所在文件夹，展示仍是完整路径
+        const what = c.copy ? '所在文件夹' : (isChanged ? '新值' : '');
+        const tip = isChanged ? `返修改过 原值：${changed[c.name] || '空'}\n点击复制${what}` : `点击复制${what}`;
         return `
-        <div class="sub-cell ${c.wide ? 'wide' : ''} ${c.value ? '' : 'empty'} ${isChanged ? 'changed' : ''}" data-cell="${esc(c.value)}" title="${esc(tip)}">
+        <div class="sub-cell ${c.wide ? 'wide' : ''} ${c.value ? '' : 'empty'} ${isChanged ? 'changed' : ''}" data-cell="${esc(c.copy ?? c.value)}" title="${esc(tip)}">
           <div class="sub-name">${esc(c.name)}${isChanged ? '<span class="changed-tag">已改</span>' : ''}</div>
           <div class="sub-val">${c.value ? esc(c.value) : '空'}</div>
         </div>`;
@@ -458,7 +460,7 @@ async function showTask(id) {
       ${field('继续次数', plain(t.continue_count))}
       ${field('完成时间', plain(t.done_time))}
       ${field('产物快照', link(t.artifact_permalink, '未收集'))}
-      ${field('待上传轨迹', codeBlock(t.trajectory_path))}
+      ${field('待上传轨迹', codeBlock(t.trajectory_win))}
       ${summary ? field('轨迹摘要', fold(`${summary.steps.length} 步 报错 ${summary.tool_errors} 次 改动文件 ${summary.files_changed.length} 个`,
         `<pre class="copy">${esc(summary.steps.map(s => s.kind === 'text' ? `#${s.n} 文字 ${s.text}` : `#${s.n} ${s.tool}${s.error ? ' 报错' : ''} ${s.input}${s.output ? '\n    ' + s.output : ''}`).join('\n'))}</pre>
         <div class="sub-title">最终回复</div><pre class="copy">${esc(summary.final_text)}</pre>`)) : ''}
@@ -482,12 +484,12 @@ async function showTask(id) {
 
     ${panel(t, 'record', '录屏', `<div class="fields">
       ${field('录屏目录', `${codeBlock('cd ' + t.record_dir)}<div class="muted hint">待录屏阶段点「准备录屏环境」后 产物快照会全新克隆到这里 录屏步骤的命令都在这个目录下执行</div>`)}
-      ${field('录屏步骤', steps ? `<ol class="steps">${steps}</ol>` : plain(''))}
+      ${field('录屏步骤', steps ? `${(t.record_issues || []).length ? issuesHtml(t.record_issues) : ''}<ol class="steps">${steps}</ol>` : plain(''))}
       ${field('录屏文件', S === '待录屏'
         ? `<div class="inline"><select id="f-recording_link">${t.recording_link ? `<option selected>${esc(t.recording_link)}</option>` : '<option value="">读取录屏目录中</option>'}</select>
             <button type="button" data-rec-refresh="1">重新读取</button></div><div id="rec-info" class="rec-info"></div>`
         : codeBlock(t.recording_link), '默认取最新的 mp4')}
-      ${field('轨迹文件', t.trajectory_path ? `${codeBlock(t.trajectory_path)}<div class="muted hint">即收集结果中的待上传轨迹 提交表的轨迹文件列直接取它</div>` : plain(''))}
+      ${field('轨迹文件', t.trajectory_path ? `${codeBlock(t.trajectory_win)}<div class="muted hint">即收集结果中的待上传轨迹 提交表的轨迹文件列直接取它</div>` : plain(''))}
     </div>`, (t.record_steps || []).length ? `${t.record_steps.length} 步` : '')}
 
     ${panel(t, 'runs', '运行记录', `

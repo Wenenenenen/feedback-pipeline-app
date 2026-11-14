@@ -336,7 +336,8 @@ body.modal-open { overflow: hidden; }
   background: rgba(28, 29, 33, .55); backdrop-filter: blur(2px);
 }
 .modal-box {
-  width: min(1680px, 100%); max-height: calc(100vh - 48px); display: flex; flex-direction: column;
+  /* 高度固定，折叠展开时弹窗不跟着变高变矮 */
+  width: min(1680px, 100%); height: calc(100vh - 48px); display: flex; flex-direction: column;
   background: var(--bg); border-radius: var(--radius); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .5);
   border-top: 4px solid var(--primary); overflow: hidden; animation: rise .2s ease;
 }
@@ -347,7 +348,7 @@ body.modal-open { overflow: hidden; }
 .modal-head h3 { margin: 0; font-size: 16px; letter-spacing: .06em; color: var(--ink); }
 .modal-head .spacer { flex: 1; }
 /* 只允许纵向滚动，内容一律换行 */
-.modal-body { overflow-y: auto; overflow-x: hidden; padding: 16px 20px 22px; display: grid; gap: 16px; }
+.modal-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 20px 22px; display: grid; gap: 16px; align-content: start; }
 .sub-row { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 /* 行标题即折叠开关，左侧箭头指示展开状态 */
 .sub-row-head {

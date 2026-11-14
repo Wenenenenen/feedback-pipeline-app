@@ -32,6 +32,15 @@ async def lifespan(_app):
 app = FastAPI(title='出题与评测流水线', lifespan=lifespan)
 STATIC = Path(__file__).resolve().parent / 'static'
 
+
+@app.middleware('http')
+async def _no_stale_static(request, call_next):
+    """页面资源每次都向后端确认是否有更新（未变化时返回 304），改了前端不用强制刷新。"""
+    resp = await call_next(request)
+    if not request.url.path.startswith('/api/'):
+        resp.headers.setdefault('Cache-Control', 'no-cache')
+    return resp
+
 # 页面可编辑的字段
 EDITABLE = {
     'user_prompt', 'domain', 'subdomain', 'difficulty', 'lang_framework', 'acceptance_points',
