@@ -574,16 +574,30 @@ def start_rework_from_text(task_id: int, text: str) -> str:
     return start_rework(task_id)
 
 
-def rework_changes(t: dict, insp: dict | None) -> list[dict]:
-    """提交表里这一轮返修改动过的格：对比返修前快照与当前内容，按提交表列顺序给出。"""
+def rework_changes(t: dict, insp: dict | None, after: dict | None = None) -> list[dict]:
+    """提交表里这一轮返修改动过的格：对比本轮快照与改完后的内容，按提交表列顺序给出。
+
+    after 为改完后的提交字段快照（下一轮登记时的快照），不传时取题目当前内容。
+    """
     if not insp or not insp.get('before_snapshot'):
         return []
     before = {**t, **insp['before_snapshot']}
+    now = {**t, **after} if after else t
     old = {c['name']: c['value'] for c in submission.row(before)}
     out = []
-    for c in submission.row(t):
+    for c in submission.row(now):
         if c['value'] != old[c['name']]:
             out.append({'column': c['name'], 'before': old[c['name']], 'after': c['value']})
+    return out
+
+
+def inspections_view(t: dict) -> list[dict]:
+    """题目详情用的历次质检：每轮附上这一轮改动过的提交表列名。"""
+    rows = db.list_inspections(t['id'])
+    out = []
+    for n, i in enumerate(rows):
+        nxt = rows[n + 1].get('before_snapshot') if n + 1 < len(rows) else None
+        out.append({**i, 'changed_columns': [c['column'] for c in rework_changes(t, i, nxt)]})
     return out
 
 

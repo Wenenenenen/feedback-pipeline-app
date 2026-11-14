@@ -131,11 +131,13 @@ tbody tr:last-child td { border-bottom: 0; }
 
 /* 质检与返修 */
 .insp-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
-.insp { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--sunken); }
-.insp-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
-table.changes td.pre { white-space: pre-wrap; word-break: break-word; vertical-align: top; }
-table.changes td.change-new { cursor: copy; }
-table.changes td.change-new:hover { background: var(--primary-soft); }
+.insp { border: 1px solid var(--line); border-radius: 8px; background: var(--sunken); }
+.insp-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; cursor: pointer; list-style: none; }
+.insp-head::-webkit-details-marker { display: none; }
+.insp-head::before { content: "▸"; color: var(--muted); font-size: 12px; transition: transform .15s; }
+details.insp[open] > .insp-head::before { transform: rotate(90deg); }
+details.insp[open] > .insp-head { border-bottom: 1px dashed var(--line); }
+.insp-body { padding: 8px 12px 10px; display: flex; flex-direction: column; gap: 6px; }
 @keyframes pulse { 50% { opacity: .25; } }
 
 /* ---------- 详情头部 ---------- */

@@ -301,14 +301,23 @@ function issuesHtml(list) {
 }
 
 // ---------- 质检与返修 ----------
-// 最近一轮返修在提交表里改动过的格：点新值即复制
-function changesHtml(list) {
-  if (!list || !list.length) return '<div class="plain empty">提交表没有需要改的格</div>';
-  return `<div class="table-wrap"><table class="changes"><colgroup><col style="width:120px"><col><col></colgroup>
-    <thead><tr><th>列</th><th>原值</th><th>新值 点击复制</th></tr></thead><tbody>${list.map(c => `<tr>
-      <td><b>${esc(c.column)}</b></td><td class="muted pre">${esc(c.before) || '空'}</td>
-      <td class="pre change-new" data-change="${esc(c.after)}" title="点击复制">${c.after ? esc(c.after) : '<span class="issues">待重新录屏后填写</span>'}</td></tr>`).join('')}
-    </tbody></table></div>`;
+// 每轮质检卡片的展开状态记在本地：默认只展开最近一轮
+function inspKey(t, i) { return `insp:${t.id}:${i.round}`; }
+
+function inspOpen(t, i, isLast) {
+  let saved = null;
+  try { saved = localStorage.getItem(inspKey(t, i)); } catch (e) { /* 本地存储不可用时按默认处理 */ }
+  return saved !== null ? saved === '1' : isLast;
+}
+
+// 这一轮在提交表里要改的列：只列列名，新旧内容到提交表弹窗里看
+function changedColumnsHtml(i, isLast, S) {
+  if (i.state === '返修中' && !i.summary) return '<div class="plain empty">AI 处理完后列出</div>';
+  const cols = i.changed_columns || [];
+  const recordHint = isLast && S === '待录屏' ? '<div class="muted hint">运行录屏一格要等重新录屏并标记完成后才会更新</div>' : '';
+  return (cols.length ? `<div class="chip-stack">${cols.map(c => `<span class="chip human">${esc(c)}</span>`).join('')}</div>`
+    : '<div class="plain empty">提交表没有要改的格</div>') +
+    '<div class="muted hint">新旧内容在提交表弹窗里看 改过的格会高亮</div>' + recordHint;
 }
 
 function inspectPanel(t) {
@@ -316,18 +325,23 @@ function inspectPanel(t) {
   const list = t.inspections || [];
   if (!list.length && S !== '已完成') return '';
   const last = list[list.length - 1];
-  const rows = list.map(i => `<div class="insp">
-      <div class="insp-head"><b>第${esc(i.round)}轮</b><span class="chip ${i.state === '已返修' ? 'ok' : 'busy'}">${esc(i.state)}</span>
-        <span class="muted">${esc(i.inspect_time || '')}</span></div>
-      ${fold('质检原文', `<pre class="copy">${esc(i.raw_text)}</pre>`)}
-      ${i.summary ? fold('AI 处理说明', `<pre class="copy">${esc(i.summary)}</pre>`, i === last) : ''}
-      ${(i.rework_items || []).map(x => `<div class="muted">${esc(x.handling)} ${esc(x.problem)} ${esc(x.detail)}</div>`).join('')}
-    </div>`).join('');
+  const rows = list.map(i => {
+    const isLast = i === last;
+    const cols = i.changed_columns || [];
+    return `<details class="insp" data-insp="${esc(i.round)}" ${inspOpen(t, i, isLast) ? 'open' : ''}>
+      <summary class="insp-head"><b>第${esc(i.round)}轮</b><span class="chip ${i.state === '已返修' ? 'ok' : 'busy'}">${esc(i.state)}</span>
+        <span class="muted">${esc(i.inspect_time || '')}</span>
+        ${cols.length ? `<span class="muted">改了 ${cols.length} 格</span>` : ''}</summary>
+      <div class="insp-body">
+        <div class="fields">${field('提交表要改的格', changedColumnsHtml(i, isLast, S))}</div>
+        ${fold('质检原文', `<pre class="copy">${esc(i.raw_text)}</pre>`)}
+        ${i.summary ? fold('AI 处理说明', `<pre class="copy">${esc(i.summary)}</pre>`) : ''}
+        ${!i.summary && (i.rework_items || []).length ? fold('AI 处理说明', `<pre class="copy">${esc(i.rework_items.map(x =>
+          `${x.handling} ${x.problem}\n${x.detail}`).join('\n\n'))}</pre>`) : ''}
+      </div>
+    </details>`;
+  }).join('');
   let body = rows ? `<div class="insp-list">${rows}</div>` : '';
-  if (last && (last.summary || last.state === '已返修')) {
-    body += `<div class="fields">${field('提交表要改的格', `${changesHtml(t.rework_changes)}
-      ${S === '待录屏' ? '<div class="muted hint">产物有改动或需要重录 按录屏卡片重新录屏并标记完成后 运行录屏一格才会更新</div>' : ''}`)}</div>`;
-  }
   if (S === '已完成') {
     body += `<div class="fields">${field('质检原文', `<textarea id="f-inspect_text" rows="6" placeholder="粘贴一条质检原文 开头为【AI质检｜待返修】"></textarea>
       <div class="muted hint">AI 按质检原文直接处理 改写 Feedback 等内容 需要时修改产物并推送新的产物快照 处理完列出提交表要改的格 质检不通过的数据直接放弃 不用粘贴</div>
@@ -497,7 +511,10 @@ async function showTask(id) {
   });
   D.querySelectorAll('[data-copy]').forEach(b => b.onclick = e => { e.preventDefault(); copyText(b.dataset.copy); });
   D.querySelectorAll('[data-copy-prompt]').forEach(b => b.onclick = () => copyText(t.user_prompt));
-  D.querySelectorAll('[data-change]').forEach(el => el.onclick = () => { if (el.dataset.change) copyText(el.dataset.change); });
+  // 记住每轮质检卡片的展开状态
+  D.querySelectorAll('details.insp').forEach(d => d.addEventListener('toggle', () => {
+    try { localStorage.setItem(`insp:${t.id}:${d.dataset.insp}`, d.open ? '1' : '0'); } catch (e) { /* 本地存储不可用时忽略 */ }
+  }));
   D.querySelectorAll('[data-log]').forEach(b => b.onclick = () => openLog(b.dataset.log, b.dataset.log));
   D.querySelectorAll('[data-act]').forEach(b => b.onclick = () => run(() => doAction(t, b.dataset.act, b.dataset.idx)));
 }

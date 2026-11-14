@@ -96,6 +96,8 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 > 状态（2026-11-14 晚）：返修简化为只由 AI 按质检原文直接处理（设计文档 5.10 已改写），上一条中的作废状态、撤销登记、人工补交产物、完成返修、处理结论枚举（REWORK_HANDLINGS）全部去掉。质检原文开头为【AI质检｜待返修】（兼容旧写法），不通过的直接拒绝不登记；`start_rework_from_text` 登记后立即跑 `qa-rework`，同时克隆验收目录与修复目录（`<verify_root>/<分支>-rework`），修复目录有改动时用 commit_artifact（标题 `fix: 返修`）推送新快照；Feedback 规则检查不过则失败，可重试（RETRY 加 S_REWORK）；产物改动或 need_rerecord 时回到待录屏，complete 时结束本轮质检；`rework_changes` 按提交表列对比快照与当前内容，页面列出要改的格。`qa-rework` schema 改为 summary、need_rerecord 加提交字段。新增 `003_rework_summary.sql`（qa_inspection 加 summary，已在运行库执行，#11 的旧返修记录保留）；migrate 对新库只执行初始化脚本、增量脚本只登记。语言/框架：`submission.normalize_lang` 去版本号与中文说明、逗号分隔，用于 qa-gen 入库、编辑保存、提交表展示，qa-gen skill 补格式要求。59 个测试通过；临时实例截图核对了返修后待录屏与已完成两种卡片。新版 `qa-rework` 尚未用真实质检跑过 codex。
 >
 > 状态（2026-11-14 晚，续）：提交表弹窗标出返修：`/api/submission` 每行附 `rework`（最近一轮的轮次、状态、改过的格到原值），页面高亮改过的格、悬停看原值、可「复制改动格」。59 个测试通过，临时实例截图核对过。
+>
+> 状态（2026-11-14 晚，再续）：题目详情的质检卡片改为每轮一张可折叠卡片（`details.insp`，默认只展开最近一轮，状态记在 localStorage），「提交表要改的格」移入各轮卡片且只列列名；接口去掉 `rework_changes`，改由 `pipeline.inspections_view` 给每轮附 `changed_columns`（前一轮对比下一轮登记时的快照，最后一轮对比当前内容）。60 个测试通过。
 
 1. 冒烟测试（已通过，脚本在 `_verify/smoke/`）：
    - WSL 中调用 Windows codex：`echo 回复ok | codex.exe exec --json --ephemeral --ignore-user-config --skip-git-repo-check -m gpt-6.1-sol -C E:\...\pipeline-agent -`，确认事件流可逐行读取、运行后 `codex login status` 仍为已登录、Codex 客户端仍在线、`~/.codex/sessions` 无新增。

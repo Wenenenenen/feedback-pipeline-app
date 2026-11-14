@@ -85,9 +85,8 @@ def get_task(task_id: int):
     v['env_blockers'] = P.env_blockers(t) if t['status'] == P.S_ENV else []
     v['port_range'] = P.port_range(t)
     v['runs'] = db.list_runs(task_id, 20)
-    # 质检与返修：历次质检记录，以及最近一轮返修在提交表里改动过的格
-    v['inspections'] = db.list_inspections(task_id)
-    v['rework_changes'] = P.rework_changes(t, v['inspections'][-1] if v['inspections'] else None)
+    # 质检与返修：历次质检记录，每轮附上改动过的提交表列名
+    v['inspections'] = P.inspections_view(t)
     return v
 
 

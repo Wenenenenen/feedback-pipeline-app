@@ -337,8 +337,7 @@ def test_rework_flow_with_fake_codex(client, monkeypatch):
     i = db.list_inspections(tid)[0]
     assert i['state'] == pipeline.I_DONE and i['summary'].startswith('删掉了') and i['need_record'] == 0
     d = client.get(f'/api/tasks/{tid}').json()
-    assert [c['column'] for c in d['rework_changes']] == ['Feedback']
-    assert d['rework_changes'][0]['after'] == NEW_FB
+    assert d['inspections'][0]['changed_columns'] == ['Feedback']
     # 提交表弹窗：返修过的题带轮次与改过的格（列名到原值），没返修过的为空
     done_task(branch='plain', seq=12)
     rows = {r['branch']: r for r in client.post('/api/submission', json={}).json()['rows']}
@@ -357,7 +356,7 @@ def test_rework_artifact_changed_needs_record(client, monkeypatch):
     assert wait_run(key)['status'] == 'success'
     t = db.get_task(tid)
     assert t['status'] == pipeline.S_RECORD and t['recording_link'] is None and t['artifact_sha'] == 'c' * 40
-    cols = [c['column'] for c in client.get(f'/api/tasks/{tid}').json()['rework_changes']]
+    cols = client.get(f'/api/tasks/{tid}').json()['inspections'][0]['changed_columns']
     assert cols == ['产物快照', '运行录屏', 'Feedback']
     assert db.open_inspection(tid)['need_record'] == 1
     rec = 'E:\\r\\b.mp4'
@@ -365,6 +364,19 @@ def test_rework_artifact_changed_needs_record(client, monkeypatch):
     t = db.get_task(tid)
     assert t['status'] == pipeline.S_DONE and t['seq'] == 11
     assert db.list_inspections(tid)[0]['state'] == pipeline.I_DONE
+
+
+def test_rework_changed_columns_per_round(client, monkeypatch):
+    """多轮返修时每轮只列自己改过的列：前一轮对比下一轮登记时的快照，最后一轮对比当前内容。"""
+    tid = done_task()
+    fake_rework(monkeypatch, {})
+    key = client.post(f'/api/tasks/{tid}/action/rework', json={'text': REWORK_TEXT}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    fake_rework(monkeypatch, {'remark': '补充了素材说明'})
+    key = client.post(f'/api/tasks/{tid}/action/rework', json={'text': REWORK_TEXT}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    rounds = client.get(f'/api/tasks/{tid}').json()['inspections']
+    assert [(r['round'], r['changed_columns']) for r in rounds] == [(1, ['Feedback']), (2, ['备注'])]
 
 
 def test_rework_gate_failure_then_retry(client, monkeypatch):
