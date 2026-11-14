@@ -1,0 +1,39 @@
+{
+  "type": "object",
+  "properties": {
+    "summary": { "type": "string" },
+    "delivery_score": { "type": "integer", "enum": [1, 2, 3, 4, 5] },
+    "feedback": { "type": "string" },
+    "remark": { "type": "string" },
+    "reproducibility": { "type": "string", "enum": ["无外部依赖", "有外部依赖，未容器化", "已容器化，可一键起环境"] },
+    "need_rerecord": { "type": "boolean" },
+    "record_steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string" },
+          "command": { "type": "string" },
+          "expect": { "type": "string" }
+        },
+        "required": ["action", "command", "expect"],
+        "additionalProperties": false
+      }
+    },
+    "self_check": {
+      "type": "object",
+      "properties": {
+        "has_process": { "type": "boolean" },
+        "has_product": { "type": "boolean" },
+        "has_code_anchor": { "type": "boolean" },
+        "score_consistent": { "type": "boolean" },
+        "note": { "type": "string" }
+      },
+      "required": ["has_process", "has_product", "has_code_anchor", "score_consistent", "note"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["summary", "delivery_score", "feedback", "remark", "reproducibility", "need_rerecord",
+               "record_steps", "self_check"],
+  "additionalProperties": false
+}

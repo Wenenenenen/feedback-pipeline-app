@@ -90,6 +90,12 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 > 状态（2026-11-13 晚）：初版提交到 github.com/Wenenenenen/feedback-pipeline-app（main，d76ae06）；Codex 工作区并入仓库 agent/ 子目录（原 E:\WorkSpace\jianzhi\feedback-pipeline-agent 已移走），配置默认路径改为由 config.AGENT_DIR 推出，agent/runs/ 不进仓库；在新位置用临时 smoke-echo skill 冒烟通过（skill 发现、schema 输出、wsl.exe、UNC 读取）。下文旧路径以此为准。
 
 > 状态（2026-11-14）：为新环境 clone 即用做可移植化。设计文档与本计划移入仓库 `docs/`（原 `feedback/_verify/` 下的两份已移走，WSL `~/jianzhi/feedback-pipeline/docs/` 副本已删除，不再同步）；冒烟脚本收进 `scripts/smoke-codex.sh` 与 `scripts/smoke/`（读页面配置，临时放入 smoke-echo 后删除，实测通过）；AGENTS.md 与两个 skill 不再写死发行版名，改由输入「本次运行」给出；start-detached.ps1 由脚本位置推出 start.sh 并支持 -Distro；start.sh 检查仓库必须位于 /mnt/<盘符>/；codex_runner 结束残留进程时 powershell.exe 不在 PATH 也能找到；README 补新环境部署（前置条件、克隆、配置、冒烟）。上文「同步 WSL docs 副本」的步骤作废。
+>
+> 状态（2026-11-14 下午）：新增质检登记与返修（设计文档 5.10）。状态加「待返修」「作废」；新表 `qa_inspection`（`001_init.sql` 同步建表，存量环境由 `002_inspection.sql` 补建，已在运行库执行）；`pipeline` 新增 parse_inspection、register_inspection、cancel_inspection、start_rework、start_recommit、finish_rework，complete 时结束返修中的质检；新 skill `qa-rework` 与 `schemas/qa-rework.json`，处理结论枚举与 `pipeline.REWORK_HANDLINGS` 一致（测试核对）；`gitops` 抽出 `_forced_ignored`（并去重）、新增 pending_changes，commit_artifact 支持自定义提交标题；提交表默认含作废题并附质检原文；style.md、qa-review 与 style_check 增加工具链噪声规则。57 个测试通过；临时实例截图核对了待返修、作废详情与提交表。`qa-rework` 尚未用真实质检跑过 codex。
+>
+> 状态（2026-11-14 晚）：返修简化为只由 AI 按质检原文直接处理（设计文档 5.10 已改写），上一条中的作废状态、撤销登记、人工补交产物、完成返修、处理结论枚举（REWORK_HANDLINGS）全部去掉。质检原文开头为【AI质检｜待返修】（兼容旧写法），不通过的直接拒绝不登记；`start_rework_from_text` 登记后立即跑 `qa-rework`，同时克隆验收目录与修复目录（`<verify_root>/<分支>-rework`），修复目录有改动时用 commit_artifact（标题 `fix: 返修`）推送新快照；Feedback 规则检查不过则失败，可重试（RETRY 加 S_REWORK）；产物改动或 need_rerecord 时回到待录屏，complete 时结束本轮质检；`rework_changes` 按提交表列对比快照与当前内容，页面列出要改的格。`qa-rework` schema 改为 summary、need_rerecord 加提交字段。新增 `003_rework_summary.sql`（qa_inspection 加 summary，已在运行库执行，#11 的旧返修记录保留）；migrate 对新库只执行初始化脚本、增量脚本只登记。语言/框架：`submission.normalize_lang` 去版本号与中文说明、逗号分隔，用于 qa-gen 入库、编辑保存、提交表展示，qa-gen skill 补格式要求。59 个测试通过；临时实例截图核对了返修后待录屏与已完成两种卡片。新版 `qa-rework` 尚未用真实质检跑过 codex。
+>
+> 状态（2026-11-14 晚，续）：提交表弹窗标出返修：`/api/submission` 每行附 `rework`（最近一轮的轮次、状态、改过的格到原值），页面高亮改过的格、悬停看原值、可「复制改动格」。59 个测试通过，临时实例截图核对过。
 
 1. 冒烟测试（已通过，脚本在 `_verify/smoke/`）：
    - WSL 中调用 Windows codex：`echo 回复ok | codex.exe exec --json --ephemeral --ignore-user-config --skip-git-repo-check -m gpt-6.1-sol -C E:\...\pipeline-agent -`，确认事件流可逐行读取、运行后 `codex login status` 仍为已登录、Codex 客户端仍在线、`~/.codex/sessions` 无新增。

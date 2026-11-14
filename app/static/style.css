@@ -128,6 +128,14 @@ tbody tr:last-child td { border-bottom: 0; }
 .chip.busy, .badge.busy { background: var(--primary-soft); color: var(--primary-ink); }
 .chip.busy::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--primary); animation: pulse 1.2s infinite; }
 .chip-stack { display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* 质检与返修 */
+.insp-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
+.insp { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--sunken); }
+.insp-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+table.changes td.pre { white-space: pre-wrap; word-break: break-word; vertical-align: top; }
+table.changes td.change-new { cursor: copy; }
+table.changes td.change-new:hover { background: var(--primary-soft); }
 @keyframes pulse { 50% { opacity: .25; } }
 
 /* ---------- 详情头部 ---------- */
@@ -143,7 +151,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .actions .push { margin-left: auto; }
 
 /* 流水线进度轨 */
-.stepper { list-style: none; display: grid; grid-template-columns: repeat(8, 1fr); margin: 16px 0 2px; padding: 0; counter-reset: step; }
+/* 按列自动排布：返修或作废时在已完成之后多出一段 */
+.stepper { list-style: none; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; margin: 16px 0 2px; padding: 0; counter-reset: step; }
 .stepper li { position: relative; text-align: center; font-size: 12px; color: var(--muted); padding-top: 22px; counter-increment: step; }
 .stepper li::before {
   content: counter(step); position: absolute; top: 0; left: 50%; transform: translateX(-50%); z-index: 1;
@@ -366,6 +375,9 @@ details.sub-row[open] > .sub-row-head { border-bottom: 1px dashed var(--line); b
 .sub-name { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .04em; margin-bottom: 2px; }
 .sub-val { font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .sub-cell.empty .sub-val { color: var(--line-strong); }
+/* 返修改过的格：左侧色条与浅底，名称后带「已改」 */
+.sub-cell.changed { background: var(--warn-soft); box-shadow: inset 3px 0 0 var(--warn); }
+.changed-tag { margin-left: 6px; padding: 0 5px; border-radius: 4px; background: var(--warn); color: #fff; font-size: 10px; letter-spacing: 0; }
 
 /* 窄屏改为上下排列 */
 @media (max-width: 1100px) {

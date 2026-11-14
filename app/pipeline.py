@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
-"""各环节业务逻辑：出题、初始化、准备环境、重做、收集、验收、查验、录屏。"""
+"""各环节业务逻辑：出题、初始化、准备环境、重做、收集、验收、查验、录屏、质检登记与返修。"""
 import datetime as dt
 import json
 import re
 import shutil
 from pathlib import Path
 
-from . import codex_runner, config, db, envcheck, gitops, jobs, materials, style_check, trajectory
+from . import (codex_runner, config, db, envcheck, gitops, jobs, materials, style_check, submission,
+               trajectory)
 
 # 状态
 S_INIT = '待初始化'
@@ -17,8 +18,18 @@ S_REVIEW = '待验收'
 S_CHECK = '待查验'
 S_RECORD = '待录屏'
 S_DONE = '已完成'
+# 甲方质检待返修：AI 按质检原文处理后回到已完成（产物改动过或需要重录时先回到待录屏）
+# 质检不通过的数据直接放弃，不进流水线
+S_REWORK = '待返修'
 S_FAIL = '失败'
-STATUSES = [S_INIT, S_ENV, S_DO, S_COLLECT, S_REVIEW, S_CHECK, S_RECORD, S_DONE, S_FAIL]
+STATUSES = [S_INIT, S_ENV, S_DO, S_COLLECT, S_REVIEW, S_CHECK, S_RECORD, S_DONE, S_REWORK, S_FAIL]
+
+# 质检记录的处理状态
+I_OPEN = '返修中'
+I_DONE = '已返修'
+# 返修前留存快照的提交字段，用于列出提交表里改了哪些格
+SNAPSHOT_FIELDS = ('feedback', 'delivery_score', 'score_reason', 'remark', 'reproducibility',
+                   'record_steps', 'artifact_sha', 'recording_link', 'lang_framework')
 
 # 出题只限定在「游戏、图形与多媒体」这一主领域，作业文档中的其他领域不再出题
 DOMAINS = {
@@ -61,7 +72,8 @@ def port_range(t: dict) -> tuple[int, int]:
 
 def due_flag(t: dict) -> str:
     """当天 20:00 前完成的题当天必须提交，20:00 后完成的题次日提交。"""
-    if not t.get('done_time') or t['status'] == S_DONE:
+    # 已编号的题已经提交过（返修中的题同样如此），不再提示提交日
+    if not t.get('done_time') or t['status'] == S_DONE or t.get('seq'):
         return ''
     done = dt.datetime.strptime(t['done_time'], '%Y-%m-%d %H:%M:%S')
     due = done.date() if done.hour < 20 else done.date() + dt.timedelta(days=1)
@@ -172,7 +184,8 @@ def start_gen(params: dict) -> str:
                 'branch': _unique_branch(it['branch']), 'status': S_INIT, 'gen_run_id': run_key,
                 'user_prompt': it['user_prompt'], 'domain': it['domain'],
                 'subdomain': it['subdomain'], 'task_type': '功能开发',
-                'difficulty': it['difficulty'], 'lang_framework': it['lang_framework'],
+                'difficulty': it['difficulty'],
+                'lang_framework': submission.normalize_lang(it['lang_framework']),
                 'acceptance_points': it['acceptance_points'], 'materials': mats,
                 'env_requirements': it['env_requirements'], 'remark': it['remark'],
                 'similarity_note': it['similarity_note'], 'harness': 'Claude Code', 'os': OS_LINUX,
@@ -398,9 +411,18 @@ def _materials_lines(t: dict) -> list[str]:
     return lines
 
 
-def _review_input(t: dict, verify_dir: Path, run_key: str = '预览') -> str:
+def _verify_lines(t: dict, verify_dir: Path) -> list[str]:
+    """验收目录、命令写法与端口段，验收与返修共用。"""
     distro = config.load()['wsl_distro']
     p0, p1 = port_range(t)
+    return ['## 验收目录',
+            f'WSL 路径 {verify_dir}',
+            f'Windows 读取路径 {unc(verify_dir)}',
+            f"执行命令方式 wsl.exe -d {distro} --cd {verify_dir} -- bash -ic '<命令>'",
+            f'可用端口 {p0}-{p1}']
+
+
+def _review_input(t: dict, verify_dir: Path, run_key: str = '预览') -> str:
     env_lines = [f"{'通过' if i['ok'] else '不通过'} {i['name']} {i['detail']}"
                  for i in (t['env_check'] or []) + (t['net_check'] or [])]
     summary = t['traj_summary'] or {'steps': [], 'files_changed': [], 'final_text': ''}
@@ -417,11 +439,7 @@ def _review_input(t: dict, verify_dir: Path, run_key: str = '预览') -> str:
         '', '## 出题备注草稿', t['remark'] or '无',
         # 素材生成脚本不在产物仓库里，验收需要换参数重新生成时从这里取
         '', '## 素材清单与生成脚本', *(_materials_lines(t) or ['无']),
-        '', '## 验收目录',
-        f'WSL 路径 {verify_dir}',
-        f'Windows 读取路径 {unc(verify_dir)}',
-        f"执行命令方式 wsl.exe -d {distro} --cd {verify_dir} -- bash -ic '<命令>'",
-        f'可用端口 {p0}-{p1}',
+        '', *_verify_lines(t, verify_dir),
         '', '## 轨迹',
         f"完整轨迹 {unc(Path(t['trajectory_path']))}",
         f"SessionID {t['session_id']} 「继续」次数 {t['continue_count']}",
@@ -497,12 +515,192 @@ def complete(task_id: int, recording_link: str) -> dict:
     # 完成时编号，接续提交表已有的最大序号
     if not t.get('seq'):
         fields['seq'] = max(int(config.load()['seq_base'] or 0), db.max_seq()) + 1
+    # 返修后重新录屏完成，本轮质检随之处理完毕（序号沿用原来的）
+    insp = db.open_inspection(task_id)
+    if insp:
+        db.update_inspection(insp['id'], state=I_DONE, resolved_time=db.now())
     return db.update_task(task_id, **fields)
+
+
+# ---------- 质检登记与返修 ----------
+
+# 质检原文开头形如【AI质检｜待返修】，兼容不带 AI 的写法
+_VERDICT = re.compile(r'【\s*(?:ai\s*)?质检\s*[｜|]\s*([^】]+?)\s*】', re.I)
+_INSPECT_TIME = re.compile(r'质检时间\s*[：:]\s*(\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}(?::\d{2})?)')
+_SECTION = re.compile(r'^[ \t]*(问题|证据|修改建议)[ \t]*[：:][ \t]*', re.M)
+_SECTION_KEYS = {'问题': 'problem', '证据': 'evidence', '修改建议': 'suggestion'}
+
+
+def parse_inspection(text: str) -> dict:
+    """解析一条待返修的质检原文：质检时间，以及问题、证据、修改建议三段（没有分段时正文记为问题）。"""
+    text = (text or '').strip()
+    if not text:
+        raise ActionError('请粘贴质检原文')
+    marks = _VERDICT.findall(text)
+    if len(marks) > 1:
+        raise ActionError('一次只处理一条质检结果，请分开粘贴')
+    if marks and marks[0] == '不通过':
+        raise ActionError('质检不通过的数据直接放弃，不进流水线返修')
+    if not marks or marks[0] != '待返修':
+        raise ActionError('没有识别到质检结论，原文开头应为【AI质检｜待返修】')
+    out = {'verdict': marks[0], 'inspect_time': None, 'raw_text': text,
+           'problem': '', 'evidence': '', 'suggestion': ''}
+    body = _VERDICT.sub('', text, count=1)
+    m = _INSPECT_TIME.search(body)
+    if m:
+        out['inspect_time'] = m.group(1).replace('T', ' ')
+        body = body[:m.start()] + body[m.end():]
+    parts = _SECTION.split(body)
+    if len(parts) == 1:
+        out['problem'] = body.strip()
+    else:
+        out['problem'] = parts[0].strip()
+        for i in range(1, len(parts), 2):
+            key = _SECTION_KEYS[parts[i]]
+            out[key] = (out[key] + '\n' + parts[i + 1].strip()).strip()
+    return out
+
+
+def start_rework_from_text(task_id: int, text: str) -> str:
+    """粘贴质检原文即返修：登记本轮质检、留存当前提交内容，随后由 AI 直接处理。"""
+    t = need(db.get_task(task_id), S_DONE)
+    p = parse_inspection(text)
+    if task_id in jobs.busy_tasks():
+        raise ActionError('该题目已有任务在运行')
+    rnd = len(db.list_inspections(task_id)) + 1
+    db.insert_inspection({**p, 'task_id': task_id, 'round': rnd, 'state': I_OPEN,
+                          'before_snapshot': {k: t.get(k) for k in SNAPSHOT_FIELDS}})
+    db.update_task(task_id, status=S_REWORK)
+    return start_rework(task_id)
+
+
+def rework_changes(t: dict, insp: dict | None) -> list[dict]:
+    """提交表里这一轮返修改动过的格：对比返修前快照与当前内容，按提交表列顺序给出。"""
+    if not insp or not insp.get('before_snapshot'):
+        return []
+    before = {**t, **insp['before_snapshot']}
+    old = {c['name']: c['value'] for c in submission.row(before)}
+    out = []
+    for c in submission.row(t):
+        if c['value'] != old[c['name']]:
+            out.append({'column': c['name'], 'before': old[c['name']], 'after': c['value']})
+    return out
+
+
+def _snapshot_lines(snap: dict) -> list[str]:
+    steps = snap.get('record_steps') or []
+    return [f"交付完整性 {snap.get('delivery_score')}",
+            f"环境可复现等级 {snap.get('reproducibility') or '未填'}",
+            '评分理由：', snap.get('score_reason') or '无',
+            'Feedback：', snap.get('feedback') or '无',
+            '备注：', snap.get('remark') or '无',
+            '录屏步骤：', *([dumps(s) for s in steps] or ['无'])]
+
+
+def _inspection_text(i: dict) -> list[str]:
+    head = f"第{i['round']}轮 {i.get('inspect_time') or ''} {i['verdict']} {i['state']}"
+    return [head, i['raw_text'], f"当时的处理说明：{i.get('summary') or '无'}"]
+
+
+def _rework_input(t: dict, insp: dict, verify_dir: Path, fix_dir: Path, repo_dir: Path,
+                  run_key: str = '预览') -> str:
+    """repo_dir 是读取 diff 与提交记录的仓库（运行时为验收目录的全新克隆）。"""
+    snap = insp.get('before_snapshot') or {}
+    history = [x for x in db.list_inspections(t['id']) if x['id'] != insp['id']]
+    summary = t['traj_summary'] or {'steps': [], 'files_changed': [], 'final_text': ''}
+    art = t.get('artifact_sha')
+    parts = [
+        *run_dir_lines(run_key),
+        '## 题目',
+        f"分支 {t['branch']}",
+        f"所属领域 {t['domain']} 子方向 {t['subdomain']} 难度 {t['difficulty']}",
+        f"语言/框架 {t['lang_framework']}",
+        'User Prompt 原文：', t['user_prompt'],
+        '', '## 内部验收要点', *[f'- {x}' for x in t['acceptance_points'] or []],
+        '', f"## 本次质检（第{insp['round']}轮）", insp['raw_text'],
+        '', '## 历次质检', *([y for x in history for y in _inspection_text(x)] or ['无']),
+        '', '## 当前提交的内容', *_snapshot_lines(snap),
+        '', '## 验收时的证据清单',
+        *([f"- {e['phenomenon']} | {e['command']} | {e['output_excerpt']}"
+           for e in t.get('evidence') or []] or ['无']),
+        '', '## 产物',
+        f"初始快照 {t['init_sha']}",
+        f'当前产物快照 {art}',
+        '提交记录（标题以 fix: 返修 开头的是之前返修的改动 不是模型的产出）：',
+        gitops.git(repo_dir, 'log', '--format=%h %s', f"{t['init_sha']}..{art}") or '无',
+        '', '## 产物 diff（初始快照到当前产物快照）', gitops.diff_text(repo_dir, t['init_sha'], art),
+        '', *_verify_lines(t, verify_dir),
+        '', '## 修复目录',
+        f'WSL 路径 {fix_dir}',
+        f'Windows 读取路径 {unc(fix_dir)}',
+        '当前产物快照的另一份全新克隆 只用来放对产物的修改 后端会把这里的改动提交并推送为新的产物快照',
+        '', '## 轨迹',
+        f"完整轨迹 {unc(Path(t['trajectory_path']))}",
+        f"WSL 路径 {t['trajectory_path']}（质检说的第N行指这个 jsonl 文件的物理行号）",
+        f"SessionID {t['session_id']} 「继续」次数 {t['continue_count']}",
+        trajectory.summary_text(summary),
+    ]
+    return '\n'.join(parts)
+
+
+def _rework_dirs(t: dict) -> tuple[Path, Path]:
+    """验收目录与修复目录（都在验收目录根下）。"""
+    root = config.path_of('verify_root')
+    return root / t['branch'], root / f"{t['branch']}-rework"
+
+
+def start_rework(task_id: int) -> str:
+    """AI 按质检原文直接处理：改写提交字段，需要时修改产物并推送为新的产物快照。
+
+    处理完回到已完成；产物改动过或 AI 判断需要重录时先回到待录屏，录完再回到已完成。
+    """
+    t = need(db.get_task(task_id), S_REWORK)
+    insp = db.open_inspection(task_id)
+    if not insp:
+        raise ActionError('没有找到正在返修的质检记录')
+
+    def work(log, run_key, stop):
+        cfg = config.load()
+        vdir, fdir = _rework_dirs(t)
+        gitops.fresh_clone(cfg['github_repo'], t['branch'], t['artifact_sha'], vdir, log=log)
+        gitops.fresh_clone(cfg['github_repo'], t['branch'], t['artifact_sha'], fdir, log=log)
+        ignored_before = gitops.ignored_entries(fdir)
+        text = _rework_input(t, insp, vdir, fdir, vdir, run_key)
+        r = codex_runner.run_skill('qa-rework', text, run_key, log, stop)
+        log(f"处理说明 {r['summary']}")
+        issues = feedback_issues(r['feedback'], r['delivery_score'])
+        if issues:
+            raise ActionError(f'返修后的 Feedback 规则检查有 {len(issues)} 处问题：' +
+                              '；'.join(f"{i['rule']}「{i['excerpt']}」" for i in issues[:5]))
+        # 修复目录有改动时提交推送为新的产物快照（提交标题注明返修，与模型产出区分）
+        art = gitops.commit_artifact(fdir, t['branch'], t['init_sha'], ignored_before,
+                                     summary=r['summary'].splitlines()[0][:60] if r['summary'] else '',
+                                     log=log, title='fix: 返修')
+        changed = art['sha'] != t['artifact_sha']
+        fields = dict(feedback=r['feedback'], delivery_score=r['delivery_score'], remark=r['remark'],
+                      reproducibility=r['reproducibility'], record_steps=r['record_steps'],
+                      review_self_check=r['self_check'], failed_from=None, last_error=None)
+        if changed:
+            log(f"产物快照 {config.permalink(t['artifact_sha'])} → {config.permalink(art['sha'])}")
+            fields['artifact_sha'] = art['sha']
+            # 做题目录取回新提交，后续 diff 能找到对象
+            if (task_dir(t) / '.git').exists():
+                gitops.git(task_dir(t), 'fetch', 'origin', t['branch'], check=False, log=log)
+        need_record = changed or bool(r['need_rerecord'])
+        db.update_inspection(insp['id'], summary=r['summary'], need_record=int(need_record))
+        if need_record:
+            db.update_task(task_id, **fields, status=S_RECORD, recording_link=None)
+            log('需要重新录屏 已回到待录屏')
+        else:
+            db.update_inspection(insp['id'], state=I_DONE, resolved_time=db.now())
+            db.update_task(task_id, **fields, status=S_DONE)
+
+    return jobs.submit('qa-rework', task_id, work, ai=True)
 
 
 # ---------- 失败重试 ----------
 
-RETRY = {S_INIT: start_init, S_COLLECT: start_collect, S_REVIEW: start_review}
+RETRY = {S_INIT: start_init, S_COLLECT: start_collect, S_REVIEW: start_review, S_REWORK: start_rework}
 
 
 def retry(task_id: int, summary: str = ''):
@@ -521,7 +719,15 @@ def describe_input(kind: str, task_id: int | None, params: dict | None = None) -
     if kind == 'qa-gen':
         return _gen_input(params or {'count': 1, 'domain': '游戏、图形与多媒体'})
     t = db.get_task(task_id)
-    return _review_input(t, config.path_of('verify_root') / t['branch'])
+    vdir = config.path_of('verify_root') / t['branch']
+    if kind == 'qa-rework':
+        insp = db.open_inspection(task_id)
+        if not insp:
+            raise ActionError('没有正在返修的质检记录')
+        vdir, fdir = _rework_dirs(t)
+        # 预览时验收目录未必有当前快照，diff 与提交记录从做题目录读取
+        return _rework_input(t, insp, vdir, fdir, task_dir(t))
+    return _review_input(t, vdir)
 
 
 def dumps(x) -> str:

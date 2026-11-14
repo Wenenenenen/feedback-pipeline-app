@@ -101,6 +101,9 @@ FEEDBACK_BANNED = [
     '有改进空间', '建议修复', '综合来看',
 ]
 
+# Feedback 专用：工具链或 shell 环境噪声，质检认定不能算作模型的过程问题
+TOOLCHAIN_NOISE = ['git bash', 'gitbash', 'msys', '路径转换']
+
 # 代码锚点：带扩展名的文件（可带路径与行号），如 src/parser.py:82 wav.js
 _CODE_ANCHOR = re.compile(r'[a-z0-9_\-/]*[a-z0-9_]\.[a-z][a-z0-9]{0,5}(?::\d+)?(?![a-z0-9])')
 # 原分依据：结尾写明「给N分」
@@ -118,6 +121,10 @@ def check_feedback_content(text: str, score=None) -> list[dict]:
         i = low.find(w)
         if i >= 0:
             issues.append(_issue(f'质检会打回的表达 {w}', text, i))
+    for w in TOOLCHAIN_NOISE:
+        i = low.find(w)
+        if i >= 0:
+            issues.append(_issue(f'工具链噪声 {w} 不能算作模型的过程问题', text, i))
     stmts = _SCORE_STMT.findall(text)
     if not stmts:
         issues.append({'rule': '没有写原分依据 结尾要写明为什么给几分', 'excerpt': text[-24:]})

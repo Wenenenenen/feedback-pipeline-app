@@ -18,6 +18,9 @@ JSON_FIELDS = {
     'review_self_check',
 }
 
+# 质检记录表中以 JSON 文本存储的字段
+INSPECTION_JSON_FIELDS = {'before_snapshot', 'rework_items'}
+
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
 
@@ -54,13 +57,18 @@ def reset_for_test():
 
 
 def migrate(c: sqlite3.Connection):
-    """按文件名顺序执行未执行过的初始化与增量脚本。"""
+    """按文件名顺序执行未执行过的初始化与增量脚本。
+
+    新库由初始化脚本直接建出最新结构，增量脚本只登记不执行；存量库按顺序补执行增量脚本。
+    """
+    fresh = c.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+                      ).fetchone() is None
     c.executescript((SQL_DIR / '001_init.sql').read_text(encoding='utf-8'))
     done = {r[0] for r in c.execute('SELECT script FROM schema_version WHERE deleted = 0')}
     for f in sorted(SQL_DIR.glob('*.sql')):
         if f.name in done:
             continue
-        if f.name != '001_init.sql':
+        if f.name != '001_init.sql' and not fresh:
             c.executescript(f.read_text(encoding='utf-8'))
         t = now()
         c.execute('INSERT INTO schema_version(script, creator, create_time, updater, update_time) '
@@ -68,11 +76,11 @@ def migrate(c: sqlite3.Connection):
     c.commit()
 
 
-def _decode(row: sqlite3.Row | None) -> dict | None:
+def _decode(row: sqlite3.Row | None, json_fields: set = JSON_FIELDS) -> dict | None:
     if row is None:
         return None
     d = dict(row)
-    for k in JSON_FIELDS & d.keys():
+    for k in json_fields & d.keys():
         if d[k]:
             try:
                 d[k] = json.loads(d[k])
@@ -81,10 +89,10 @@ def _decode(row: sqlite3.Row | None) -> dict | None:
     return d
 
 
-def _encode(fields: dict) -> dict:
+def _encode(fields: dict, json_fields: set = JSON_FIELDS) -> dict:
     out = {}
     for k, v in fields.items():
-        out[k] = json.dumps(v, ensure_ascii=False) if k in JSON_FIELDS and v is not None else v
+        out[k] = json.dumps(v, ensure_ascii=False) if k in json_fields and v is not None else v
     return out
 
 
@@ -150,6 +158,49 @@ def max_seq() -> int:
     with _lock:
         r = conn().execute('SELECT MAX(seq) FROM qa_task WHERE deleted = 0').fetchone()
         return r[0] or 0
+
+
+# ---------- 质检记录 ----------
+
+def insert_inspection(fields: dict) -> int:
+    t = now()
+    f = _encode(fields, INSPECTION_JSON_FIELDS)
+    f.update(creator=OPERATOR, create_time=t, updater=OPERATOR, update_time=t)
+    cols = ', '.join(f)
+    marks = ', '.join('?' for _ in f)
+    with _lock:
+        c = conn()
+        cur = c.execute(f'INSERT INTO qa_inspection({cols}) VALUES ({marks})', list(f.values()))
+        c.commit()
+        return cur.lastrowid
+
+
+def update_inspection(insp_id: int, **fields):
+    if not fields:
+        return
+    f = _encode(fields, INSPECTION_JSON_FIELDS)
+    f.update(updater=OPERATOR, update_time=now())
+    sets = ', '.join(f'{k} = ?' for k in f)
+    with _lock:
+        c = conn()
+        c.execute(f'UPDATE qa_inspection SET {sets} WHERE id = ?', [*f.values(), insp_id])
+        c.commit()
+
+
+def list_inspections(task_id: int) -> list[dict]:
+    """一道题的全部质检记录，按轮次升序。"""
+    with _lock:
+        rows = conn().execute('SELECT * FROM qa_inspection WHERE task_id = ? AND deleted = 0 '
+                              'ORDER BY round', (task_id,)).fetchall()
+        return [_decode(r, INSPECTION_JSON_FIELDS) for r in rows]
+
+
+def open_inspection(task_id: int) -> dict | None:
+    """正在返修的那条质检记录（同一时间最多一条）。"""
+    with _lock:
+        return _decode(conn().execute(
+            "SELECT * FROM qa_inspection WHERE task_id = ? AND deleted = 0 AND state = '返修中' "
+            'ORDER BY round DESC LIMIT 1', (task_id,)).fetchone(), INSPECTION_JSON_FIELDS)
 
 
 def insert_run(run_key: str, kind: str, task_id: int | None, log_path: str) -> int:

@@ -1,10 +1,32 @@
 # -*- coding: utf-8 -*-
 """提交表：按提交表的列顺序整理每道题的取值，供页面展示和逐格复制。"""
 import json
+import re
 import subprocess
 from pathlib import Path
 
 from . import config
+
+# 语言/框架：中文、分隔符、括号都当作分隔；「+」两侧有空格或紧跟字母时才是分隔（保留 c++ 这类名字）
+_LANG_SPLIT = re.compile(r'[　-〿＀-￯一-鿿㐀-䶿,;/|()\[\]{}]+'
+                         r'|\s+\+\s+|(?<=[a-z0-9])\+(?=[a-z])')
+# 版本号：比较符版本（>=5.4）、独立的数字串（可带 v 或 r 前缀、.x 后缀）、
+# 紧贴在名字后的点分版本（python3.12）、c++ 后的标准号（c++17）
+_LANG_VERSION = re.compile(r'(?:>=|<=|>|<|~|\^)\s*\d+(?:\.\d+)*(?:\.x)?'
+                           r'|(?:^|\s)[vr]?\d+(?:\.\d+)*(?:\.x)?(?=\s|$)'
+                           r'|(?<=[a-z])\d+(?:\.\d+)+$'
+                           r'|(?<=\+\+)\d+$')
+
+
+def normalize_lang(text: str | None) -> str:
+    """提交表的语言/框架：去掉版本号，英文小写，用英文逗号分隔，如 java,python,nodejs。"""
+    out = []
+    for tok in _LANG_SPLIT.split((text or '').lower()):
+        tok = _LANG_VERSION.sub(' ', tok.strip())
+        tok = re.sub(r'[^a-z0-9+#\-]', '', tok)  # 去掉空格与点，node.js 记为 nodejs
+        if tok and not tok.isdigit() and tok not in out:
+            out.append(tok)
+    return ','.join(out)
 
 # 提交表列顺序
 COLUMNS = ['序号', '分支', 'User Prompt', '所属领域', '子方向', '任务类型', '任务难度', '语言/框架',
@@ -24,7 +46,7 @@ def row(t: dict) -> list[dict]:
     vals = {
         '序号': t['seq'], '分支': t['branch'], 'User Prompt': t['user_prompt'],
         '所属领域': t['domain'], '子方向': t['subdomain'], '任务类型': t['task_type'],
-        '任务难度': t['difficulty'], '语言/框架': t['lang_framework'], 'Harness': t['harness'],
+        '任务难度': t['difficulty'], '语言/框架': normalize_lang(t['lang_framework']), 'Harness': t['harness'],
         'Harness 版本': t['harness_version'], '操作系统': t['os'],
         '环境可复现等级': t['reproducibility'], '初始环境快照': config.permalink(t['init_sha']),
         'SessionID': t['session_id'], 'TurnID/PromptID': t['prompt_id'],

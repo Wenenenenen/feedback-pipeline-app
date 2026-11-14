@@ -189,7 +189,7 @@ def test_schemas_are_strict():
                 walk(v, f'{path}.{k}')
         if node.get('type') == 'array':
             walk(node['items'], path + '[]')
-    for name in ('qa-gen', 'qa-review'):
+    for name in ('qa-gen', 'qa-review', 'qa-rework'):
         walk(json.loads((ws / 'schemas' / f'{name}.json').read_text(encoding='utf-8')), name)
 
 
@@ -249,3 +249,179 @@ def test_materials_lines_include_script():
     assert 'samples/a.zip' in text and 'python3 gen.py' in text
     assert 'https://example.com/b.mp4' in text
     assert pipeline._materials_lines({'materials': []}) == []
+
+
+# ---------- 质检登记与返修 ----------
+# 质检原文属于作业方材料，测试只用格式相同的虚构文本
+
+GOOD_FEEDBACK = ('模型写完src/app.js只跑了node --check就说完成 没有打开过页面 最终提交里src/app.js第40行'
+                 'render在数据为空时直接读items.length 页面白屏报typeerror 问题仍在 给2分')
+REWORK_TEXT = ('【AI质检｜待返修】\n质检时间：2026-11-13 15:07:35\n问题：\n过程段把某个环境现象归因成模型问题。\n'
+               '证据：\n1. 原轨第12行只是环境提示。\n修改建议：\n删除这条过程归因 保留产物缺陷。')
+VOID_TEXT = '【AI质检｜不通过】\n质检时间：2026-11-12 13:32:38\n轨迹里有不允许的内容 需重新生成本轮轨迹。'
+NEW_FB = GOOD_FEEDBACK.replace('没有打开过页面', '没有在浏览器里打开过页面')
+
+
+def wait_run(key):
+    import time
+    for _ in range(100):
+        if db.get_run(key)['status'] != 'running':
+            break
+        time.sleep(0.1)
+    return db.get_run(key)
+
+
+def done_task(**kw):
+    f = dict(status=pipeline.S_DONE, seq=11, feedback=GOOD_FEEDBACK, delivery_score=2,
+             score_reason='核心功能白屏', reproducibility='无外部依赖', artifact_sha='b' * 40,
+             init_sha='a' * 40, recording_link='E:\\r\\a.mp4', trajectory_path='/data/t.jsonl',
+             record_steps=[{'action': '启动', 'command': 'npm start', 'expect': '白屏'}])
+    f.update(kw)
+    return new_task(**f)
+
+
+def test_parse_inspection():
+    p = pipeline.parse_inspection(REWORK_TEXT)
+    assert p['verdict'] == '待返修' and p['inspect_time'] == '2026-11-13 15:07:35'
+    assert p['problem'].startswith('过程段') and '原轨第12行' in p['evidence']
+    assert p['suggestion'].startswith('删除这条')
+    # 不带 AI 的旧写法照样识别；没有分段的质检，正文整体记为问题
+    p = pipeline.parse_inspection('【质检｜待返修】\n质检时间：2026-11-14 11:46:57\nfeedback缺代码锚点 需补写')
+    assert p['problem'].startswith('feedback缺') and not p['evidence']
+    # 不通过的数据直接放弃，不进流水线
+    with pytest.raises(pipeline.ActionError, match='直接放弃'):
+        pipeline.parse_inspection(VOID_TEXT)
+    with pytest.raises(pipeline.ActionError, match='一次只处理一条'):
+        pipeline.parse_inspection(REWORK_TEXT + '\n' + REWORK_TEXT)
+    with pytest.raises(pipeline.ActionError, match='质检结论'):
+        pipeline.parse_inspection('质检时间：2026-11-13 15:07:35 没有结论')
+
+
+def fake_rework(monkeypatch, result: dict, new_sha: str | None = None):
+    """替换 codex 与 git：AI 返回 result；new_sha 不为空时模拟修复目录有改动、推送了新的产物快照。"""
+    from app import gitops
+    seen = {}
+
+    def fake(skill, text, run_key, log, stop=None):
+        seen['skill'], seen['text'] = skill, text
+        base = {'summary': '删掉了环境现象的过程归因', 'delivery_score': 2, 'feedback': NEW_FB,
+                'remark': '', 'reproducibility': '无外部依赖', 'need_rerecord': False,
+                'record_steps': [{'action': '启动', 'command': 'npm start', 'expect': '白屏'}],
+                'self_check': {'has_process': True, 'has_product': True, 'has_code_anchor': True,
+                               'score_consistent': True, 'note': 'ok'}}
+        return {**base, **result}
+    monkeypatch.setattr(codex_runner, 'run_skill', fake)
+    monkeypatch.setattr(gitops, 'fresh_clone', lambda *a, **k: None)
+    monkeypatch.setattr(gitops, 'ignored_entries', lambda *a, **k: [])
+    monkeypatch.setattr(gitops, 'git', lambda *a, **k: '')
+    monkeypatch.setattr(gitops, 'diff_text', lambda *a, **k: 'diff')
+    monkeypatch.setattr(gitops, 'commit_artifact',
+                        lambda d, b, init, ign, summary='', log=None, title='': {'sha': new_sha or 'b' * 40})
+    return seen
+
+
+def test_rework_flow_with_fake_codex(client, monkeypatch):
+    """粘贴质检原文即由 AI 处理，处理完直接回到已完成，列出提交表要改的格，序号与录屏沿用。"""
+    tid = done_task(lang_framework='Node.js 22 + 原生JavaScript')
+    seen = fake_rework(monkeypatch, {})
+    # 不通过的质检不进流水线，题目状态不变
+    r = client.post(f'/api/tasks/{tid}/action/rework', json={'text': VOID_TEXT})
+    assert r.status_code == 400 and db.get_task(tid)['status'] == pipeline.S_DONE and not db.list_inspections(tid)
+    key = client.post(f'/api/tasks/{tid}/action/rework', json={'text': REWORK_TEXT}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    assert seen['skill'] == 'qa-rework' and '本次质检（第1轮）' in seen['text']
+    assert '原轨第12行' in seen['text'] and '修复目录' in seen['text'] and GOOD_FEEDBACK in seen['text']
+    t = db.get_task(tid)
+    assert t['status'] == pipeline.S_DONE and t['feedback'] == NEW_FB
+    assert t['seq'] == 11 and t['recording_link'] == 'E:\\r\\a.mp4'
+    i = db.list_inspections(tid)[0]
+    assert i['state'] == pipeline.I_DONE and i['summary'].startswith('删掉了') and i['need_record'] == 0
+    d = client.get(f'/api/tasks/{tid}').json()
+    assert [c['column'] for c in d['rework_changes']] == ['Feedback']
+    assert d['rework_changes'][0]['after'] == NEW_FB
+    # 提交表弹窗：返修过的题带轮次与改过的格（列名到原值），没返修过的为空
+    done_task(branch='plain', seq=12)
+    rows = {r['branch']: r for r in client.post('/api/submission', json={}).json()['rows']}
+    assert rows['demo']['rework'] == {'round': 1, 'state': pipeline.I_DONE, 'changed': {'Feedback': GOOD_FEEDBACK}}
+    assert rows['plain']['rework'] is None
+    # 只有已完成的题可以返修
+    tid2 = new_task(branch='other')
+    assert client.post(f'/api/tasks/{tid2}/action/rework', json={'text': REWORK_TEXT}).status_code == 400
+
+
+def test_rework_artifact_changed_needs_record(client, monkeypatch):
+    """修复目录有改动时推送新的产物快照，回到待录屏，录完回到已完成并结束本轮质检。"""
+    tid = done_task()
+    fake_rework(monkeypatch, {'summary': '补交了tests目录'}, new_sha='c' * 40)
+    key = client.post(f'/api/tasks/{tid}/action/rework', json={'text': REWORK_TEXT}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    t = db.get_task(tid)
+    assert t['status'] == pipeline.S_RECORD and t['recording_link'] is None and t['artifact_sha'] == 'c' * 40
+    cols = [c['column'] for c in client.get(f'/api/tasks/{tid}').json()['rework_changes']]
+    assert cols == ['产物快照', '运行录屏', 'Feedback']
+    assert db.open_inspection(tid)['need_record'] == 1
+    rec = 'E:\\r\\b.mp4'
+    assert client.post(f'/api/tasks/{tid}/action/complete', json={'recording_link': rec}).status_code == 200
+    t = db.get_task(tid)
+    assert t['status'] == pipeline.S_DONE and t['seq'] == 11
+    assert db.list_inspections(tid)[0]['state'] == pipeline.I_DONE
+
+
+def test_rework_gate_failure_then_retry(client, monkeypatch):
+    """AI 返修后的 Feedback 过不了规则检查时置为失败、不改提交内容，重试重新跑 AI。"""
+    tid = done_task()
+    fake_rework(monkeypatch, {'feedback': '页面白屏，控制台报错'})
+    key = client.post(f'/api/tasks/{tid}/action/rework', json={'text': REWORK_TEXT}).json()['run_key']
+    assert wait_run(key)['status'] == 'failed'
+    t = db.get_task(tid)
+    assert t['status'] == pipeline.S_FAIL and t['failed_from'] == pipeline.S_REWORK
+    assert t['feedback'] == GOOD_FEEDBACK and '规则检查' in t['last_error']
+    fake_rework(monkeypatch, {})
+    key = client.post(f'/api/tasks/{tid}/action/retry', json={}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    assert db.get_task(tid)['status'] == pipeline.S_DONE and len(db.list_inspections(tid)) == 1
+
+
+def test_rework_schema_matches():
+    ws = Path(config.DEFAULTS['agent_workspace_wsl'])
+    if not ws.exists():
+        pytest.skip('Codex 工作区不存在')
+    s = json.loads((ws / 'schemas' / 'qa-rework.json').read_text(encoding='utf-8'))
+    assert s['properties']['reproducibility']['enum'] == pipeline.REPRO_LEVELS
+
+
+def test_normalize_lang_in_submission(client):
+    """提交表的语言/框架不带版本号，英文小写，英文逗号分隔；编辑保存时同样规整。"""
+    from app import submission
+    n = submission.normalize_lang
+    assert n('Java, Python, Node.js') == 'java,python,nodejs'
+    assert n('Node.js 22 + 原生JavaScript（Web Worker、Web Audio、Canvas）；Python 3.12标准库生成素材') == \
+        'nodejs,javascript,webworker,webaudio,canvas,python'
+    assert n('C++17 + OpenGL 4.5') == 'c++,opengl'
+    assert n('TypeScript>=5.4 + React 18') == 'typescript,react'
+    assert n('Go 1.22, FFmpeg 6.x, H.264') == 'go,ffmpeg,h264'
+    assert n('') == '' and n(None) == ''
+    tid = done_task(lang_framework='Python 3.12 + SQLite')
+    cells = {c['name']: c['value'] for c in client.post('/api/submission', json={}).json()['rows'][0]['cells']}
+    assert cells['语言/框架'] == 'python,sqlite'
+    r = client.put(f'/api/tasks/{tid}', json={'lang_framework': 'Rust 1.80 / wgpu'}).json()
+    assert r['lang_framework'] == 'rust,wgpu'
+
+
+def test_migrate_fresh_and_existing(data_dir):
+    """新库由初始化脚本直接建出最新结构；存量库补执行缺的增量脚本。"""
+    import sqlite3
+    c = db.conn()
+    cols = {r[1] for r in c.execute('PRAGMA table_info(qa_inspection)')}
+    assert 'summary' in cols
+    done = {r[0] for r in c.execute('SELECT script FROM schema_version')}
+    assert {'001_init.sql', '002_inspection.sql', '003_rework_summary.sql'} <= done
+    # 模拟只执行到 002 的存量库
+    c.execute('ALTER TABLE qa_inspection DROP COLUMN summary')
+    c.execute("DELETE FROM schema_version WHERE script = '003_rework_summary.sql'")
+    c.commit()
+    db.reset_for_test()
+    c = sqlite3.connect(db.db_path())
+    db.migrate(c)
+    assert 'summary' in {r[1] for r in c.execute('PRAGMA table_info(qa_inspection)')}
+    c.close()

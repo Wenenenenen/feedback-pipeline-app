@@ -34,6 +34,7 @@ description: 为 CC/Codex 用户反馈标注项目批量出 0-1 功能开发题�
 8. **环境需求**：`toolchain` 列出题目需要的工具与最低版本，`check_command` 是在 WSL 中能输出版本号的命令（如 `go version`、`ffmpeg -version`），`install_hint` 给 Ubuntu 下的安装命令。
 9. **备注草稿**：`remark` 用一两句话写素材与环境前置条件，例如「0-1 开发。samples 预置 1080p 测试视频；需先安装 ffmpeg」。
 10. **分支名**：`branch` 用小写字母、数字和连字符组成的项目短名（如 `live-relay`、`podcast-post`），不与已有题目重复。
+11. **语言/框架**：`lang_framework` 只写语言与主要框架或库的名字，英文小写、不带版本号，用英文逗号分隔，不加空格和说明文字，例如 `java,python,nodejs`、`go,ffmpeg`、`typescript,webgpu`。
 
 ## User Prompt 写法
 

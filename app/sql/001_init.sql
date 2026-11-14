@@ -80,6 +80,32 @@ CREATE TABLE IF NOT EXISTS qa_run (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_qa_run_key ON qa_run(run_key);
 
+-- 质检记录表：甲方每返回一次待返修结果记一条，同一题可有多轮（存量环境由 002、003 增量脚本补齐）
+CREATE TABLE IF NOT EXISTS qa_inspection (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,  -- 主键
+    task_id             INTEGER NOT NULL,                   -- 关联题目
+    round               INTEGER NOT NULL,                   -- 质检轮次（同一题从 1 递增）
+    inspect_time        VARCHAR(32),                        -- 质检时间（取自质检原文）
+    verdict             VARCHAR(16) NOT NULL,               -- 质检结论（只登记待返修，不通过的数据直接放弃）
+    raw_text            TEXT NOT NULL,                      -- 质检原文
+    problem             TEXT,                               -- 问题（原文中的问题段，无分段时为正文）
+    evidence            TEXT,                               -- 证据（原文中的证据段）
+    suggestion          TEXT,                               -- 修改建议（原文中的修改建议段）
+    state               VARCHAR(16) NOT NULL,               -- 处理状态：返修中 / 已返修
+    before_snapshot     TEXT,                               -- 返修前的提交内容快照（JSON）
+    rework_items        TEXT,                               -- 早期版本的逐条处理结论（JSON 数组，现已不再写入）
+    need_record         SMALLINT NOT NULL DEFAULT 0,        -- 返修后是否需要重新录屏
+    summary             TEXT,                               -- AI 返修的处理说明
+    resolved_time       TIMESTAMP,                          -- 返修完成时间
+    creator             VARCHAR(64),                        -- 创建者
+    create_time         TIMESTAMP NOT NULL,                 -- 创建时间
+    updater             VARCHAR(64),                        -- 更新者
+    update_time         TIMESTAMP NOT NULL,                 -- 更新时间
+    deleted             SMALLINT NOT NULL DEFAULT 0,        -- 是否删除
+    tenant_id           BIGINT NOT NULL DEFAULT 0           -- 租户编号
+);
+CREATE INDEX IF NOT EXISTS idx_qa_inspection_task ON qa_inspection(task_id);
+
 -- 数据库版本表：记录已执行的初始化与增量脚本
 CREATE TABLE IF NOT EXISTS schema_version (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,  -- 主键

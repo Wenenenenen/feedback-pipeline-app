@@ -53,6 +53,14 @@ def test_banned_words():
     assert any('首先' in r for r in rules('首先模型没读文件'))
 
 
+def test_toolchain_noise_flagged():
+    """git bash 路径转换这类工具链噪声不能算作模型的过程问题，质检会打回。"""
+    text = GOOD + ' 模型看到请求异常就说是git bash路径转换导致的 给2分 src/app.js'
+    found = [i['rule'] for i in check_feedback_content(text, 2)]
+    assert any('工具链噪声' in r for r in found)
+    assert not any('工具链噪声' in i['rule'] for i in check_feedback_content(GOOD + ' 给2分 src/app.js', 2))
+
+
 def test_prompt_only_checks_banned_words():
     assert check_prompt('帮我用 Go 写一个 RTMP 服务，延迟 2 秒内。') == []
     assert check_prompt('值得注意的是，要支持多房间。')

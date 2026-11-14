@@ -85,6 +85,32 @@ def test_detect_force_push(tmp_path, remote):
         G.commit_artifact(d, 'demo', init, ignored)
 
 
+def test_rework_commit_in_fresh_clone(tmp_path, remote):
+    """返修：在产物快照的全新克隆（修复目录）里改动后提交推送，产物快照前进且仍以初始快照为祖先。"""
+    d, init, ignored = setup_task(tmp_path, remote)
+    (d / 'main.go').write_text('package main', encoding='utf-8')
+    art = G.commit_artifact(d, 'demo', init, ignored, summary='初版')
+    fix = tmp_path / 'verify' / 'demo-rework'
+    G.fresh_clone(str(remote), 'demo', art['sha'], fix)
+    before = G.ignored_entries(fix)
+    # 修复目录没有改动时不产生新提交
+    assert G.commit_artifact(fix, 'demo', init, before, title='fix: 返修')['sha'] == art['sha']
+    # AI 补上漏交的测试和基准文件，其中一个被忽略规则挡住，依赖目录不应带进去
+    (fix / '.gitignore').write_text((fix / '.gitignore').read_text() + '*.stl\n')
+    (fix / 'tests' / 'data').mkdir(parents=True)
+    (fix / 'tests' / 'data' / 'baseline.stl').write_bytes(b'solid')
+    (fix / 'tests' / 'test_main.py').write_text('def test_ok(): pass', encoding='utf-8')
+    (fix / 'node_modules' / 'x').mkdir(parents=True)
+    (fix / 'node_modules' / 'x' / 'i.js').write_text('x')
+    (fix / '.gitignore').write_text((fix / '.gitignore').read_text() + 'node_modules/\n')
+    new = G.commit_artifact(fix, 'demo', init, before, summary='补交测试', title='fix: 返修')
+    assert run(['git', 'log', '-1', '--format=%s'], fix) == 'fix: 返修 - 补交测试'
+    files = run(['git', 'ls-tree', '-r', '--name-only', new['sha']], fix).splitlines()
+    assert 'tests/data/baseline.stl' in files and 'tests/test_main.py' in files
+    assert not any(f.startswith('node_modules') for f in files)
+    assert G.is_ancestor(fix, art['sha'], new['sha']) and G.remote_head(fix, 'demo') == new['sha']
+
+
 def test_fresh_clone(tmp_path, remote):
     d, init, ignored = setup_task(tmp_path, remote)
     dest = tmp_path / 'verify' / 'demo'

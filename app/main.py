@@ -85,6 +85,9 @@ def get_task(task_id: int):
     v['env_blockers'] = P.env_blockers(t) if t['status'] == P.S_ENV else []
     v['port_range'] = P.port_range(t)
     v['runs'] = db.list_runs(task_id, 20)
+    # 质检与返修：历次质检记录，以及最近一轮返修在提交表里改动过的格
+    v['inspections'] = db.list_inspections(task_id)
+    v['rework_changes'] = P.rework_changes(t, v['inspections'][-1] if v['inspections'] else None)
     return v
 
 
@@ -102,6 +105,9 @@ def put_task(task_id: int, body: dict = Body(...)):
             raise HTTPException(400, '子方向不属于所属领域')
     if fields.get('reproducibility') not in (None, '', *P.REPRO_LEVELS):
         raise HTTPException(400, '环境可复现等级取值无效')
+    # 语言/框架统一为不带版本号、英文逗号分隔的写法
+    if 'lang_framework' in fields:
+        fields['lang_framework'] = submission.normalize_lang(fields['lang_framework'])
     if 'delivery_score' in fields and fields['delivery_score'] not in (None, ''):
         fields['delivery_score'] = int(fields['delivery_score'])
     return P.view(db.update_task(task_id, **fields))
@@ -135,6 +141,8 @@ ACTIONS = {
     'prepare_record': lambda i, b: P.start_prepare_record(i),
     'complete': lambda i, b: P.complete(i, b.get('recording_link', '')),
     'retry': lambda i, b: P.retry(i, b.get('summary', '')),
+    # 返修：粘贴质检原文，AI 直接处理
+    'rework': lambda i, b: P.start_rework_from_text(i, b.get('text', '')),
 }
 
 
@@ -151,6 +159,12 @@ def action(task_id: int, name: str, body: dict = Body(default={})):
 def review_input(task_id: int):
     """预览传给 qa-review 的输入文本（调试用）。"""
     return {'text': P.describe_input('qa-review', task_id)}
+
+
+@app.get('/api/tasks/{task_id}/rework-input')
+def rework_input(task_id: int):
+    """预览传给 qa-rework 的输入文本（调试用）。"""
+    return {'text': P.describe_input('qa-rework', task_id)}
 
 
 # ---------- 运行记录 ----------
@@ -185,13 +199,24 @@ def stop_run(run_key: str):
 
 @app.post('/api/submission')
 def submission_rows(body: dict = Body(default={})):
-    """勾选了题目时返回勾选的题目，否则返回全部已完成的题目，按序号排列。"""
+    """勾选了题目时返回勾选的题目，否则返回全部已完成的题目，按序号排列。
+
+    返修过的题附上最近一轮返修的轮次与改动过的格（列名到原值），页面据此高亮。
+    """
     ids = [int(x) for x in (body or {}).get('ids') or []]
     tasks = [db.get_task(i) for i in ids] if ids else db.list_tasks(P.S_DONE)
     tasks = sorted((t for t in tasks if t), key=lambda t: (t['seq'] is None, t['seq'] or 0, t['id']))
-    return {'columns': submission.COLUMNS,
-            'rows': [{'id': t['id'], 'branch': t['branch'], 'status': t['status'],
-                      'cells': submission.row(t)} for t in tasks]}
+    rows = []
+    for t in tasks:
+        insps = db.list_inspections(t['id'])
+        rework = None
+        if insps:
+            last = insps[-1]
+            rework = {'round': last['round'], 'state': last['state'],
+                      'changed': {c['column']: c['before'] for c in P.rework_changes(t, last)}}
+        rows.append({'id': t['id'], 'branch': t['branch'], 'status': t['status'],
+                     'rework': rework, 'cells': submission.row(t)})
+    return {'columns': submission.COLUMNS, 'rows': rows}
 
 
 @app.get('/api/recordings')

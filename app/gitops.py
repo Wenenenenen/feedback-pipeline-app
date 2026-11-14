@@ -120,21 +120,8 @@ def _is_secret_entry(entry: str) -> bool:
     return any(fnmatch.fnmatch(name, p) for p in SECRET_PATTERNS)
 
 
-def commit_artifact(task_dir: Path, branch: str, init_sha: str, ignored_before: list[str],
-                    summary: str = '', log=None) -> dict:
-    """提交产物快照：校验远端、补交会话期间新出现的被忽略文件、推送。"""
-    if not is_ancestor(task_dir, init_sha, 'HEAD'):
-        raise GitError('本地 HEAD 不再以初始快照为祖先（模型可能改写了历史）')
-    head = remote_head(task_dir, branch, log=log)
-    if head is None:
-        raise GitError('远端分支不存在（可能被模型删除）')
-    if head != init_sha:
-        git(task_dir, 'fetch', 'origin', branch, log=log)
-        if not is_ancestor(task_dir, init_sha, head):
-            raise GitError('远端分支被强推改写，初始快照不再是其祖先')
-        if not is_ancestor(task_dir, head, 'HEAD'):
-            raise GitError('远端分支有本地没有的提交，请人工检查')
-    git(task_dir, 'add', '-A', log=log)
+def _forced_ignored(task_dir: Path, ignored_before: list[str]) -> list[str]:
+    """会话期间新出现、需要用 -f 补交的被忽略文件（排除依赖缓存与凭据）。"""
     before = set(ignored_before or [])
     forced = []
     for e in ignored_entries(task_dir):
@@ -147,11 +134,36 @@ def commit_artifact(task_dir: Path, branch: str, init_sha: str, ignored_before: 
                        if f and not _is_dep_entry(f) and not _is_secret_entry(f)]
         elif not _is_secret_entry(e):
             forced.append(e)
+    # git 可能同时列出目录与目录里的文件，去重并保持顺序
+    return list(dict.fromkeys(forced))
+
+
+def commit_artifact(task_dir: Path, branch: str, init_sha: str, ignored_before: list[str],
+                    summary: str = '', log=None, title: str = 'feat: 模型产物') -> dict:
+    """提交产物快照：校验远端、补交会话期间新出现的被忽略文件、推送。
+
+    返修时在修复目录（产物快照的全新克隆）里复用本函数，title 改为返修的提交标题。
+    """
+    if not is_ancestor(task_dir, init_sha, 'HEAD'):
+        raise GitError('本地 HEAD 不再以初始快照为祖先（模型可能改写了历史）')
+    head = remote_head(task_dir, branch, log=log)
+    if head is None:
+        raise GitError('远端分支不存在（可能被模型删除）')
+    if head != init_sha:
+        git(task_dir, 'fetch', 'origin', branch, log=log)
+        if not is_ancestor(task_dir, init_sha, head):
+            raise GitError('远端分支被强推改写，初始快照不再是其祖先')
+        if not is_ancestor(task_dir, head, 'HEAD'):
+            raise GitError('远端分支有本地没有的提交，请人工检查')
+    git(task_dir, 'add', '-A', log=log)
+    forced = _forced_ignored(task_dir, ignored_before)
     for e in forced:
         git(task_dir, 'add', '-f', '--', e, log=log)
     staged = git(task_dir, 'diff', '--cached', '--name-only')
     if staged:
-        git(task_dir, 'commit', '-m', f"feat: 模型产物 - {summary or branch}", log=log)
+        if log:
+            log('本次提交的文件：' + ' '.join(staged.split()))
+        git(task_dir, 'commit', '-m', f"{title} - {summary or branch}", log=log)
     git(task_dir, 'push', 'origin', f'HEAD:refs/heads/{branch}', log=log)
     sha = git(task_dir, 'rev-parse', 'HEAD')
     if not is_ancestor(task_dir, init_sha, sha):

@@ -43,7 +43,9 @@ function copyText(text) {
 // 流水线主干阶段（不含「失败」），用于详情顶部的进度轨
 const STAGES = ['待初始化', '待准备环境', '待做题', '待收集', '待验收', '待查验', '待录屏', '已完成'];
 // 需要人工动手的阶段，用醒目颜色提示
-const HUMAN_STAGES = ['待准备环境', '待做题', '待查验', '待录屏'];
+const HUMAN_STAGES = ['待准备环境', '待做题', '待查验', '待录屏', '待返修'];
+// 甲方质检之后的状态，接在主干阶段之后显示
+const AFTER_STAGES = ['待返修'];
 
 function statusClass(s) {
   if (s === '失败') return 'fail';
@@ -56,11 +58,14 @@ function shortTime(s) { return String(s ?? '').replace('T', ' ').slice(5, 16); }
 
 function stepper(t) {
   const cur = t.status === '失败' ? t.failed_from : t.status;
-  const idx = STAGES.indexOf(cur);
+  // 返修发生在已完成之后：主干全部标为完成，再追加一段
+  const after = AFTER_STAGES.includes(cur);
+  const idx = after ? STAGES.length : STAGES.indexOf(cur);
+  const extra = after ? `<li class="${t.status === '失败' ? 'fail' : 'cur'}">${esc(cur.replace(/^待/, ''))}</li>` : '';
   return '<ol class="stepper">' + STAGES.map((s, i) => {
     const cls = i < idx ? 'done' : i === idx ? (t.status === '失败' ? 'fail' : (s === '已完成' ? 'done' : 'cur')) : '';
     return `<li class="${cls}">${esc(s.replace(/^待/, ''))}</li>`;
-  }).join('') + '</ol>';
+  }).join('') + extra + '</ol>';
 }
 
 // 统一字段行：左标签 右控件，控件占满剩余宽度
@@ -105,7 +110,8 @@ function foldChecks(items) {
 // 各阶段默认展开的卡片，其余卡片默认折叠
 const PANEL_FOCUS = {
   '待初始化': ['info'], '待准备环境': ['info', 'materials', 'env'], '待做题': ['do'], '待收集': ['do', 'collect'],
-  '待验收': ['collect'], '待查验': ['review'], '待录屏': ['review', 'record'], '已完成': ['record'],
+  '待验收': ['collect'], '待查验': ['review'], '待录屏': ['review', 'record', 'inspect'], '已完成': ['record', 'inspect'],
+  '待返修': ['inspect'],
 };
 
 // 卡片展开状态按「题目 + 状态」记在本地，刷新详情后保持
@@ -186,20 +192,33 @@ async function openSubmission() {
   $('#sub-scope').textContent = ids.length ? `勾选的 ${data.rows.length} 题` : `全部已完成的 ${data.rows.length} 题`;
   // 每行可折叠：只有一题时默认展开，多题时默认折叠
   const openRow = data.rows.length <= 1;
-  $('#sub-body').innerHTML = data.rows.map((r, ri) => `
+  $('#sub-body').innerHTML = data.rows.map((r, ri) => {
+    // 返修过的题：标题行标出轮次，最近一轮改过的格高亮，悬停显示原值
+    const changed = r.rework?.changed || {};
+    const nChanged = Object.keys(changed).length;
+    const reworkChip = r.rework ? `<span class="chip human">第${esc(r.rework.round)}轮返修${r.rework.state === '已返修' ? '' : ' ' + esc(r.rework.state)}</span>
+        <span class="muted">${nChanged ? `改了 ${nChanged} 格` : '提交表没有要改的格'}</span>` : '';
+    return `
     <details class="sub-row" ${openRow ? 'open' : ''}>
       <summary class="sub-row-head">
         <span class="seq">${r.cells[0].value ? '#' + esc(r.cells[0].value) : '未编号'}</span>
         <b class="mono">${esc(r.branch)}</b><span class="chip ${statusClass(r.status)}">${esc(r.status)}</span>
+        ${reworkChip}
         <span class="spacer"></span>
+        ${nChanged ? `<button type="button" data-changed-copy="${ri}" title="每行一格 列名与新值以制表符分隔">复制改动格</button>` : ''}
         <button type="button" data-row-copy="${ri}">复制整行</button>
       </summary>
-      <div class="sub-grid">${r.cells.map(c => `
-        <div class="sub-cell ${c.wide ? 'wide' : ''} ${c.value ? '' : 'empty'}" data-cell="${esc(c.value)}" title="点击复制">
-          <div class="sub-name">${esc(c.name)}</div>
+      <div class="sub-grid">${r.cells.map(c => {
+        const isChanged = c.name in changed;
+        const tip = isChanged ? `返修改过 原值：${changed[c.name] || '空'}\n点击复制新值` : '点击复制';
+        return `
+        <div class="sub-cell ${c.wide ? 'wide' : ''} ${c.value ? '' : 'empty'} ${isChanged ? 'changed' : ''}" data-cell="${esc(c.value)}" title="${esc(tip)}">
+          <div class="sub-name">${esc(c.name)}${isChanged ? '<span class="changed-tag">已改</span>' : ''}</div>
           <div class="sub-val">${c.value ? esc(c.value) : '空'}</div>
-        </div>`).join('')}</div>
-    </details>`).join('') || '<div class="empty-state"><div><b>没有可展示的题目</b>勾选左侧题目，或等题目标记完成后再打开</div></div>';
+        </div>`;
+      }).join('')}</div>
+    </details>`;
+  }).join('') || '<div class="empty-state"><div><b>没有可展示的题目</b>勾选左侧题目，或等题目标记完成后再打开</div></div>';
   const B = $('#sub-body');
   B.querySelectorAll('[data-cell]').forEach(el => el.onclick = () => {
     copyText(el.dataset.cell);
@@ -211,6 +230,14 @@ async function openSubmission() {
     e.preventDefault();
     e.stopPropagation();
     copyText(data.rows[+b.dataset.rowCopy].cells.map(c => tsvCell(c.value)).join('\t'));
+  });
+  // 只复制最近一轮返修改过的格：每行「列名 制表符 新值」，按提交表列顺序
+  B.querySelectorAll('[data-changed-copy]').forEach(b => b.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    const r = data.rows[+b.dataset.changedCopy];
+    const changed = r.rework?.changed || {};
+    copyText(r.cells.filter(c => c.name in changed).map(c => `${c.name}\t${tsvCell(c.value)}`).join('\n'));
   });
   $('#sub-expand').onclick = () => B.querySelectorAll('details.sub-row').forEach(d => { d.open = true; });
   $('#sub-collapse').onclick = () => B.querySelectorAll('details.sub-row').forEach(d => { d.open = false; });
@@ -273,6 +300,44 @@ function issuesHtml(list) {
     (list.length > 30 ? `<br>共 ${list.length} 处` : '') + '</div>';
 }
 
+// ---------- 质检与返修 ----------
+// 最近一轮返修在提交表里改动过的格：点新值即复制
+function changesHtml(list) {
+  if (!list || !list.length) return '<div class="plain empty">提交表没有需要改的格</div>';
+  return `<div class="table-wrap"><table class="changes"><colgroup><col style="width:120px"><col><col></colgroup>
+    <thead><tr><th>列</th><th>原值</th><th>新值 点击复制</th></tr></thead><tbody>${list.map(c => `<tr>
+      <td><b>${esc(c.column)}</b></td><td class="muted pre">${esc(c.before) || '空'}</td>
+      <td class="pre change-new" data-change="${esc(c.after)}" title="点击复制">${c.after ? esc(c.after) : '<span class="issues">待重新录屏后填写</span>'}</td></tr>`).join('')}
+    </tbody></table></div>`;
+}
+
+function inspectPanel(t) {
+  const S = t.status;
+  const list = t.inspections || [];
+  if (!list.length && S !== '已完成') return '';
+  const last = list[list.length - 1];
+  const rows = list.map(i => `<div class="insp">
+      <div class="insp-head"><b>第${esc(i.round)}轮</b><span class="chip ${i.state === '已返修' ? 'ok' : 'busy'}">${esc(i.state)}</span>
+        <span class="muted">${esc(i.inspect_time || '')}</span></div>
+      ${fold('质检原文', `<pre class="copy">${esc(i.raw_text)}</pre>`)}
+      ${i.summary ? fold('AI 处理说明', `<pre class="copy">${esc(i.summary)}</pre>`, i === last) : ''}
+      ${(i.rework_items || []).map(x => `<div class="muted">${esc(x.handling)} ${esc(x.problem)} ${esc(x.detail)}</div>`).join('')}
+    </div>`).join('');
+  let body = rows ? `<div class="insp-list">${rows}</div>` : '';
+  if (last && (last.summary || last.state === '已返修')) {
+    body += `<div class="fields">${field('提交表要改的格', `${changesHtml(t.rework_changes)}
+      ${S === '待录屏' ? '<div class="muted hint">产物有改动或需要重录 按录屏卡片重新录屏并标记完成后 运行录屏一格才会更新</div>' : ''}`)}</div>`;
+  }
+  if (S === '已完成') {
+    body += `<div class="fields">${field('质检原文', `<textarea id="f-inspect_text" rows="6" placeholder="粘贴一条质检原文 开头为【AI质检｜待返修】"></textarea>
+      <div class="muted hint">AI 按质检原文直接处理 改写 Feedback 等内容 需要时修改产物并推送新的产物快照 处理完列出提交表要改的格 质检不通过的数据直接放弃 不用粘贴</div>
+      <div><button data-act="rework" class="primary">AI 返修</button></div>`)}</div>`;
+  }
+  if (S === '待返修') body += '<div class="muted hint">AI 正在按质检原文处理 完成后回到已完成 或在需要重新录屏时回到待录屏</div>';
+  const meta = S === '待返修' ? `第${esc(last.round)}轮返修中` : list.length ? `${list.length} 次质检` : '';
+  return panel(t, 'inspect', '质检与返修', body, meta);
+}
+
 function btn(label, action, cls = '', extra = '') {
   return `<button data-act="${action}" class="${cls}" ${extra}>${label}</button>`;
 }
@@ -316,6 +381,7 @@ async function showTask(id) {
   const repro = t.reproducibility ?? '';
   const reproKnown = levels.includes(repro);
   const evidenceCount = (t.evidence || []).length;
+  const inspectHtml = inspectPanel(t);
 
   $('#detail').innerHTML = `
     <div class="detail-head">
@@ -332,6 +398,8 @@ async function showTask(id) {
       <div class="actions">${actions.join('')}
         <span class="fold-all"><button type="button" class="ghost" data-fold-all="1">全部展开</button><button type="button" class="ghost" data-fold-all="0">全部折叠</button></span></div>
     </div>
+
+    ${inspectHtml}
 
     ${panel(t, 'info', '题目信息', `<div class="fields">
       ${field('User Prompt', `${issuesHtml(t.prompt_issues).replace('口吻检查通过', '无 AI 化或刻意口语表达')}
@@ -391,8 +459,7 @@ async function showTask(id) {
         ${repro && !reproKnown ? `<div class="muted">验收原建议 ${esc(repro)}</div>` : ''}`)}
       ${field('备注', `<textarea id="f-remark" rows="3" ${ro(reviewEditable || editableInfo)}>${esc(t.remark ?? '')}</textarea>`)}
       ${t.review_self_check ? field('自检', selfCheckHtml(t.review_self_check)) : ''}
-      ${S === '待查验' ? field('打回意见', '<textarea id="f-reject" rows="3" placeholder="打回时必填"></textarea>') : ''}
-      ${field('证据清单', `<div class="muted hint">验收时每核对一项记一条 现象 执行的命令 输出摘录 用来核对 Feedback 里每个结论都有实测依据 也是挑选录屏内容的来源 不导出到提交表</div>
+      ${S === '待查验' ? field('打回意见', '<textarea id="f-reject" rows="3" placeholder="打回时必填"></textarea>') : ''}      ${field('证据清单', `<div class="muted hint">验收时每核对一项记一条 现象 执行的命令 输出摘录 用来核对 Feedback 里每个结论都有实测依据 也是挑选录屏内容的来源 不导出到提交表</div>
         ${evidenceCount ? fold(`${evidenceCount} 条 其中 ${(t.evidence || []).filter(e => e.needs_recording_confirm).length} 条需录屏确认`,
           `<div class="table-wrap"><table class="evidence"><colgroup><col style="width:26%"><col style="width:34%"><col><col style="width:96px"></colgroup>
           <thead><tr><th>现象</th><th>命令</th><th>输出摘录</th><th>录屏</th></tr></thead><tbody>${evidence}</tbody></table></div>`) : plain('')}`)}
@@ -430,6 +497,7 @@ async function showTask(id) {
   });
   D.querySelectorAll('[data-copy]').forEach(b => b.onclick = e => { e.preventDefault(); copyText(b.dataset.copy); });
   D.querySelectorAll('[data-copy-prompt]').forEach(b => b.onclick = () => copyText(t.user_prompt));
+  D.querySelectorAll('[data-change]').forEach(el => el.onclick = () => { if (el.dataset.change) copyText(el.dataset.change); });
   D.querySelectorAll('[data-log]').forEach(b => b.onclick = () => openLog(b.dataset.log, b.dataset.log));
   D.querySelectorAll('[data-act]').forEach(b => b.onclick = () => run(() => doAction(t, b.dataset.act, b.dataset.idx)));
 }
@@ -465,6 +533,10 @@ async function doAction(t, act, idx) {
   if (idx !== undefined) body.idx = +idx;
   if (act === 'approve') await saveReview(id);
   if (act === 'reject') body.comment = val('reject');
+  if (act === 'rework') {
+    body.text = val('inspect_text') || '';
+    if (!body.text.trim()) throw new Error('请粘贴质检原文');
+  }
   if (act === 'collect' || (act === 'retry' && t.failed_from === '待收集')) {
     // 产物提交信息：feat: 模型产物 - <概述>
     const s = prompt('产物概述（用于提交信息 feat: 模型产物 - <概述>）', t.branch);
