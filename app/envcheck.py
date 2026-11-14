@@ -81,11 +81,24 @@ def _version_tuple(text: str) -> tuple:
     return tuple(int(x or 0) for x in m.groups()) if m else ()
 
 
+# 检查命令指向项目内的虚拟环境、node_modules 或相对路径，说明是项目依赖而不是系统工具
+_PROJECT_LOCAL = re.compile(r'(^|[\s"\'=(])(\.{1,2}/|\.?venv/|node_modules/)')
+
+
+def is_project_local(cmd: str) -> bool:
+    """项目依赖（pip、npm 包等）由做题的模型在做题目录内自己安装，准备环境时不预检、不预装。"""
+    return bool(_PROJECT_LOCAL.search(cmd or ''))
+
+
 def toolchain_check(toolchain: list[dict], cwd: str | None = None) -> list[dict]:
     """逐项执行检查命令，比较最低版本。cwd 为做题目录，检查命令里的相对路径（如 .venv/bin/python）按它解析。"""
     items = []
     for t in toolchain or []:
-        code, out = _bash(t.get('check_command') or f"{t.get('name')} --version", cwd=cwd)
+        cmd = t.get('check_command') or f"{t.get('name')} --version"
+        if is_project_local(cmd):
+            items.append(_item(t.get('name', ''), True, '项目内依赖 做题时由模型安装 不预检'))
+            continue
+        code, out = _bash(cmd, cwd=cwd)
         first = out.splitlines()[0] if out else ''
         ok = code == 0
         need = t.get('min_version') or ''

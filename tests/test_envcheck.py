@@ -28,12 +28,20 @@ def test_interactive_bash_runs_in_new_session(monkeypatch, tmp_path):
     assert calls and all(c.get('start_new_session') for c in calls)
 
 
-def test_toolchain_check_resolves_relative_paths_in_task_dir(tmp_path):
-    """检查命令里的相对路径按做题目录解析。"""
-    tool = tmp_path / '.venv' / 'bin' / 'tool'
-    tool.parent.mkdir(parents=True)
-    tool.write_text('#!/bin/sh\necho 1.26.4\n', encoding='utf-8')
-    tool.chmod(0o755)
-    item = {'name': 'numpy', 'check_command': '.venv/bin/tool', 'min_version': '1.26'}
-    assert envcheck.toolchain_check([item], cwd=str(tmp_path))[0]['ok']
-    assert not envcheck.toolchain_check([item])[0]['ok']
+def test_toolchain_check_runs_in_task_dir(tmp_path):
+    """系统工具的检查命令在做题目录执行。"""
+    item = {'name': 'pwd', 'check_command': 'pwd'}
+    assert envcheck.toolchain_check([item], cwd=str(tmp_path))[0]['detail'] == str(tmp_path)
+
+
+def test_project_dependencies_are_not_prechecked(monkeypatch):
+    """项目依赖由做题的模型自己安装：直接算通过，不执行检查命令。"""
+    calls = _capture_run(monkeypatch, envcheck)
+    tc = [{'name': 'numpy', 'check_command': '.venv/bin/python -c "import numpy; print(numpy.__version__)"',
+           'min_version': '1.26'},
+          {'name': 'vite', 'check_command': 'node_modules/.bin/vite --version', 'min_version': '5'},
+          {'name': 'cli', 'check_command': './bin/cli --version', 'min_version': ''}]
+    items = envcheck.toolchain_check(tc)
+    assert all(i['ok'] for i in items) and not calls
+    for cmd in ('python3 --version', 'ffmpeg -version', 'go version', 'node -v'):
+        assert not envcheck.is_project_local(cmd)
