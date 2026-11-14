@@ -40,6 +40,7 @@
 ```
 Win  E:\WorkSpace\jianzhi\feedback-pipeline-app\     仓库 feedback-pipeline-app（WSL 中为 /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app）
        app/                                 FastAPI 后端、静态页面、sql/ 初始化与增量脚本
+       start.cmd                            Windows 双击前台运行后端
        tests/  scripts/                     测试；启动脚本 start.sh、start-detached.ps1、验收工具安装脚本 setup-verify-tools.sh、codex 冒烟 smoke-codex.sh
        docs/                                设计文档与实施计划
        agent/                               Codex 工作区（与后端同仓库同版本，结构见下）

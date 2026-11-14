@@ -78,6 +78,8 @@ pwsh -File E:\WorkSpace\jianzhi\feedback-pipeline-app\scripts\start-detached.ps1
 bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/start.sh
 ```
 
+也可以在 Windows 中双击仓库根目录的 `start.cmd` 前台运行：日志直接显示在弹出的窗口里，关闭窗口或按 Ctrl+C 即停止；后端已在后台运行时只提示地址，不重复启动。发行版不是 Ubuntu-24.04 时在命令行执行 `start.cmd <发行版名>`。
+
 后端退出会中断正在运行的 skill，重启后该运行记为失败，需重新发起。端口可用环境变量 `PIPELINE_PORT` 修改，运行时目录可用 `PIPELINE_HOME` 修改。
 
 ## 使用流程
