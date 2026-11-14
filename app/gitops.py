@@ -33,8 +33,9 @@ class GitError(RuntimeError):
     pass
 
 
-def git(cwd: Path, *args: str, check: bool = True, log=None) -> str:
-    cmd = ['git', *args]
+def git(cwd: Path, *args: str, check: bool = True, log=None, strip: bool = True) -> str:
+    # 关闭路径转义，中文等非 ASCII 文件名按原样输出，避免把转义串当路径传回 git
+    cmd = ['git', '-c', 'core.quotepath=off', *args]
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8',
                        errors='replace')
     if log:
@@ -45,7 +46,7 @@ def git(cwd: Path, *args: str, check: bool = True, log=None) -> str:
             log(p.stderr.strip()[-2000:])
     if check and p.returncode != 0:
         raise GitError(f"git {' '.join(args)} 失败：{p.stderr.strip()[-500:]}")
-    return p.stdout.strip()
+    return p.stdout.strip() if strip else p.stdout
 
 
 def remote_head(cwd: Path, branch: str, log=None) -> str | None:
@@ -74,10 +75,42 @@ def init_task_dir(task_dir: Path, branch: str, repo: str, log=None):
     (task_dir / '.gitignore').write_text(GITIGNORE, encoding='utf-8')
 
 
+def _ls_ignored(task_dir: Path, *extra: str) -> list[str]:
+    """用 -z 列出被忽略的路径：空字节分隔，任何文件名都不会被加引号转义。"""
+    out = git(task_dir, 'ls-files', '-z', '--others', '--ignored', '--exclude-standard', *extra,
+              strip=False)
+    return [x for x in out.split('\0') if x]
+
+
+_C_ESCAPES = {'a': 7, 'b': 8, 't': 9, 'n': 10, 'v': 11, 'f': 12, 'r': 13, '"': 34, '\\': 92}
+_OCTAL = '01234567'
+
+
+def _unquote(path: str) -> str:
+    """还原 git 按 core.quotepath 输出的 C 风格引号路径（兼容旧任务记录里的转义串）。"""
+    if len(path) < 2 or path[0] != '"' or path[-1] != '"':
+        return path
+    s, out, i = path[1:-1], bytearray(), 0
+    while i < len(s):
+        c = s[i]
+        if c == '\\' and i + 1 < len(s):
+            oct3 = s[i + 1:i + 4]
+            if len(oct3) == 3 and all(ch in _OCTAL for ch in oct3):
+                out.append(int(oct3, 8) & 0xFF)
+                i += 4
+                continue
+            if s[i + 1] in _C_ESCAPES:
+                out.append(_C_ESCAPES[s[i + 1]])
+                i += 2
+                continue
+        out += c.encode('utf-8')
+        i += 1
+    return out.decode('utf-8', errors='replace')
+
+
 def ignored_entries(task_dir: Path) -> list[str]:
     """当前被忽略的文件与目录（目录以 / 结尾，不展开）。"""
-    out = git(task_dir, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory')
-    return sorted(x for x in out.splitlines() if x)
+    return sorted(_ls_ignored(task_dir, '--directory'))
 
 
 def commit_initial(task_dir: Path, branch: str, log=None) -> str:
@@ -122,16 +155,16 @@ def _is_secret_entry(entry: str) -> bool:
 
 def _forced_ignored(task_dir: Path, ignored_before: list[str]) -> list[str]:
     """会话期间新出现、需要用 -f 补交的被忽略文件（排除依赖缓存与凭据）。"""
-    before = set(ignored_before or [])
+    # 旧任务记录的可能是带引号的转义路径，统一还原后再比较
+    before = {_unquote(x) for x in (ignored_before or [])}
     forced = []
     for e in ignored_entries(task_dir):
         if e in before or _is_dep_entry(e):
             continue
         if e.endswith('/'):
             # 目录展开成文件逐个过滤，避免把目录里的凭据一起带进去
-            files = git(task_dir, 'ls-files', '--others', '--ignored', '--exclude-standard', '--', e)
-            forced += [f for f in files.splitlines()
-                       if f and not _is_dep_entry(f) and not _is_secret_entry(f)]
+            forced += [f for f in _ls_ignored(task_dir, '--', e)
+                       if not _is_dep_entry(f) and not _is_secret_entry(f)]
         elif not _is_secret_entry(e):
             forced.append(e)
     # git 可能同时列出目录与目录里的文件，去重并保持顺序

@@ -59,6 +59,35 @@ def test_artifact_with_new_ignored_files(tmp_path, remote):
     assert art['model_commits'] == 2
 
 
+def test_artifact_with_chinese_ignored_files(tmp_path, remote):
+    """被忽略文件名含中文时能正常补交，旧任务记录的转义路径仍视为初始就有。"""
+    d, init, ignored = setup_task(tmp_path, remote)
+    (d / '.gitignore').write_text((d / '.gitignore').read_text() + 'samples/extracted/\n旧*.txt\n')
+    (d / '旧素材.txt').write_text('初始就有')
+    old_ignored = G.ignored_entries(d)
+    assert '旧素材.txt' in old_ignored  # 新格式记录原样中文
+    # 模拟旧版本记录的带引号转义路径
+    quoted_before = run(['git', '-c', 'core.quotepath=on', 'ls-files', '--others', '--ignored',
+                         '--exclude-standard', '--directory'], d).splitlines()
+    assert any(x.startswith('"') for x in quoted_before)
+    (d / 'samples' / 'extracted').mkdir()
+    (d / 'samples' / 'extracted' / '说明.txt').write_text('抽取结果', encoding='utf-8')
+    (d / 'samples' / 'extracted' / 'a b.txt').write_text('空格', encoding='utf-8')
+    art = G.commit_artifact(d, 'demo', init, quoted_before, summary='中文文件')
+    files = run(['git', '-c', 'core.quotepath=off', 'ls-tree', '-r', '--name-only', art['sha']],
+                d).splitlines()
+    assert 'samples/extracted/说明.txt' in files and 'samples/extracted/a b.txt' in files
+    assert '旧素材.txt' not in files  # 初始就有的被忽略文件不补交
+    assert set(art['forced_ignored']) == {'samples/extracted/说明.txt', 'samples/extracted/a b.txt'}
+
+
+def test_unquote():
+    assert G._unquote('"samples/extracted/\\350\\257\\264\\346\\230\\216.txt"') == \
+        'samples/extracted/说明.txt'
+    assert G._unquote('"a\\tb\\"c\\\\d"') == 'a\tb"c\\d'
+    assert G._unquote('plain/path.txt') == 'plain/path.txt'
+
+
 def test_redo_resets_local_and_remote(tmp_path, remote):
     d, init, ignored = setup_task(tmp_path, remote)
     (d / 'a.txt').write_text('作废会话的产物')
