@@ -42,8 +42,16 @@ $before = ((& wsl.exe -d $Distro -e bash -c "mkdir -p ~/jianzhi/feedback-pipelin
 if ($before -notmatch '^\d+$') { $before = '0' }
 
 # 通过 WMI 创建进程：新进程由系统服务派生，不属于当前终端的进程树与作业对象
+# ShowWindow 0：新建的控制台一开始就隐藏，wsl.exe 再拉起的子进程沿用它，不会弹出空的 wsl.exe 窗口（窗口被关掉后端就跟着退出）
+# 不能用 DETACHED_PROCESS：父进程没有控制台时子进程会自己新建一个可见的；WMI 也不接受 CREATE_NO_WINDOW
 $cmd = "wsl.exe -d $Distro -e bash -ic `"bash '$startSh' >> $serverLog 2>&1`""
-$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $cmd }
+$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{
+    ShowWindow = [uint16]0
+}
+$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+    CommandLine               = $cmd
+    ProcessStartupInformation = $startup
+}
 if ($r.ReturnValue -ne 0) {
     throw "启动失败，返回码 $($r.ReturnValue)"
 }
