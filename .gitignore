@@ -10,6 +10,12 @@ venv/
 # Codex 每次运行的输入、结果与草稿
 agent/runs/
 
+# 本地参考资料（作业文档、质检说明等），仓库公开，不能提交
+docs/private/
+
+# Claude Code 本地设置
+.claude/settings.local.json
+
 # 运行数据不进仓库（数据库、日志、轨迹副本都在 WSL ~/jianzhi/feedback-pipeline/data）
 data/
 *.db
