@@ -4,9 +4,10 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import config, db, jobs, pipeline as P, submission
@@ -201,17 +202,35 @@ def stop_run(run_key: str):
 
 # ---------- 提交表与录屏文件 ----------
 
+def _submission_tasks(body: dict | None) -> list[dict]:
+    """提交表的题目范围：勾选了题目时取勾选的，否则取全部已完成的；已编号的按序号排在前面。"""
+    ids = [int(x) for x in (body or {}).get('ids') or []]
+    tasks = [db.get_task(i) for i in ids] if ids else db.list_tasks(P.S_DONE)
+    return sorted((t for t in tasks if t), key=lambda t: (t['seq'] is None, t['seq'] or 0, t['id']))
+
+
+@app.post('/api/submission/xlsx')
+def submission_xlsx(body: dict = Body(default={})):
+    """按与提交表弹窗相同的范围导出 xlsx，列顺序同提交表。"""
+    tasks = _submission_tasks(body)
+    if not tasks:
+        raise HTTPException(400, '没有可导出的题目')
+    data = submission.to_xlsx([submission.row(t) for t in tasks])
+    name = f"提交表-{time.strftime('%Y%m%d-%H%M%S')}.xlsx"
+    # 中文文件名按 RFC 5987 编码，同时给出 ASCII 兜底名
+    disp = f"attachment; filename=\"submission.xlsx\"; filename*=UTF-8''{quote(name)}"
+    return Response(data, headers={'Content-Disposition': disp},
+                    media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
 @app.post('/api/submission')
 def submission_rows(body: dict = Body(default={})):
     """勾选了题目时返回勾选的题目，否则返回全部已完成的题目，按序号排列。
 
     返修过的题附上最近一轮返修的轮次与改动过的格（列名到原值），页面据此高亮。
     """
-    ids = [int(x) for x in (body or {}).get('ids') or []]
-    tasks = [db.get_task(i) for i in ids] if ids else db.list_tasks(P.S_DONE)
-    tasks = sorted((t for t in tasks if t), key=lambda t: (t['seq'] is None, t['seq'] or 0, t['id']))
     rows = []
-    for t in tasks:
+    for t in _submission_tasks(body):
         insps = db.list_inspections(t['id'])
         rework = None
         if insps:

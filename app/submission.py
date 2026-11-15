@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""提交表：按提交表的列顺序整理每道题的取值，供页面展示和逐格复制。"""
+"""提交表：按提交表的列顺序整理每道题的取值，供页面展示、逐格复制和导出 Excel。"""
+import io
 import json
 import re
 import subprocess
@@ -66,6 +67,52 @@ def row(t: dict) -> list[dict]:
             cell['copy'] = config.win_parent(cell['value'])
         cells.append(cell)
     return cells
+
+
+# ---------- 导出 Excel ----------
+
+# 导出时按数字写入的列，其余一律按文本写入（避免长 ID 被转成科学计数法）
+NUMERIC_COLUMNS = {'序号', '交付完整性'}
+# 各列的导出宽度（字符数），长文本列放宽并自动换行
+_XLSX_WIDTH = {'User Prompt': 60, 'Feedback': 60, '备注': 40, '初始环境快照': 36, '产物快照': 36,
+               '轨迹文件': 36, '运行录屏': 30, 'SessionID': 24, 'TurnID/PromptID': 24, '分支': 24}
+
+
+def to_xlsx(rows: list[list[dict]]) -> bytes:
+    """把提交表的若干行（每行为 row() 的结果）写成 xlsx：首行表头，列顺序同 COLUMNS。"""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '提交表'
+    ws.append(COLUMNS)
+    for cells in rows:
+        vals = []
+        for c in cells:
+            v = c['value']
+            vals.append(int(v) if c['name'] in NUMERIC_COLUMNS and v.isdigit() else v)
+        ws.append(vals)
+    head_fill = PatternFill('solid', fgColor='EFEAE0')
+    for cell in ws[1]:
+        cell.font = Font(bold=True)
+        cell.fill = head_fill
+        cell.alignment = Alignment(vertical='center')
+    wrap = Alignment(wrap_text=True, vertical='top')
+    for line in ws.iter_rows(min_row=2):
+        for cell in line:
+            cell.alignment = wrap
+            # 快照链接写成可点击的超链接
+            if isinstance(cell.value, str) and cell.value.startswith(('http://', 'https://')):
+                cell.hyperlink = cell.value
+                cell.font = Font(color='1F5FBF', underline='single')
+    for i, name in enumerate(COLUMNS, 1):
+        ws.column_dimensions[get_column_letter(i)].width = _XLSX_WIDTH.get(name, 14)
+    ws.freeze_panes = 'A2'
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
 
 
 # ---------- 录屏文件 ----------

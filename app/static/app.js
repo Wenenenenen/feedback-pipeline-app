@@ -187,6 +187,22 @@ function tsvCell(v) {
   return /[\t\n\r"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
+// 导出 Excel：范围与弹窗一致（勾选的题目，或全部已完成的），文件名取后端给的带时间戳的名字
+async function downloadSubmission(ids) {
+  const res = await fetch('/api/submission/xlsx', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || '导出失败');
+  const m = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get('Content-Disposition') || '');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(await res.blob());
+  a.download = m ? decodeURIComponent(m[1]) : '提交表.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('已导出 ' + a.download);
+}
+
 async function openSubmission() {
   const ids = [...document.querySelectorAll('.row-check:checked')].map(x => +x.value);
   const data = await api('/api/submission', { method: 'POST', body: { ids } });
@@ -245,6 +261,8 @@ async function openSubmission() {
   $('#sub-expand').onclick = () => B.querySelectorAll('details.sub-row').forEach(d => { d.open = true; });
   $('#sub-collapse').onclick = () => B.querySelectorAll('details.sub-row').forEach(d => { d.open = false; });
   $('#sub-copy-head').onclick = () => copyText(data.columns.join('\t'));
+  $('#sub-xlsx').disabled = !data.rows.length;
+  $('#sub-xlsx').onclick = () => run(() => downloadSubmission(ids));
   $('#sub-modal').classList.remove('hidden');
   document.body.classList.add('modal-open');
 }

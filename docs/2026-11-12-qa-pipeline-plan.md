@@ -121,3 +121,5 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 3. 同步 WSL `~/jianzhi/feedback-pipeline/docs/` 中的设计文档副本。
 
 > 状态（2026-11-15，再续）：运行日志抽屉改为多标签：`logTabs` 按 run_key 记录标题、读取位置、已读内容与状态，`pollLogs` 同时轮询所有运行中的标签，任一运行结束时刷新列表与详情；标签可切换、单独关闭，「关闭全部」收起抽屉，「停止」作用于当前标签。顶部导航新增「日志」按钮（`openLogsManually`）：把所有运行中的运行补成标签（标题为分支名加运行类型），没有运行中的也没有已开标签时打开最近一次运行。两个验收同时运行时实测两个标签各自更新、内容不串，手动打开能补出两个运行中的标签。78 个测试通过。
+
+> 状态（2026-11-15，三续）：提交表新增导出 Excel：`submission.to_xlsx` 用 openpyxl 按 COLUMNS 写表头与各行（序号、交付完整性按数字，其余按文本，http 链接加超链接，冻结首行，长文本换行），`/api/submission/xlsx` 与 `/api/submission` 共用 `_submission_tasks` 选题范围，没有题目时返回 400；弹窗加「导出 Excel」按钮，文件名「提交表-时间戳.xlsx」。requirements 补 openpyxl==3.1.5（运行环境已装）。79 个测试通过；重启后端后在页面实测导出 3 道已完成题目，内容核对一致。

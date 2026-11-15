@@ -187,6 +187,37 @@ def test_submission_rows(client):
     assert [r['branch'] for r in body['rows']] == ['done-task', 'check-task']
 
 
+def test_submission_xlsx(client):
+    """导出 Excel 的范围与弹窗一致，表头为提交表列顺序，序号与交付完整性按数字写入，链接可点击。"""
+    import io
+    from urllib.parse import unquote
+    from openpyxl import load_workbook
+    from app import submission
+    client.put('/api/config', json={'github_repo': 'git@github.com:org/repo.git'})
+    # 没有已完成的题目时不导出空表
+    assert client.post('/api/submission/xlsx', json={}).status_code == 400
+    done = new_task(branch='done-task', status=pipeline.S_DONE, seq=11, init_sha='a' * 40,
+                    delivery_score=3, session_id='0123456789012345678', feedback='模型没跑测试 给3分')
+    other = new_task(branch='check-task', status=pipeline.S_CHECK)
+    r = client.post('/api/submission/xlsx', json={})
+    assert r.status_code == 200 and r.headers['content-type'].startswith(
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    assert unquote(r.headers['content-disposition'].split("UTF-8''")[1]).startswith('提交表-')
+    ws = load_workbook(io.BytesIO(r.content)).active
+    rows = [list(x) for x in ws.iter_rows(values_only=True)]
+    assert rows[0] == submission.COLUMNS and len(rows) == 2
+    got = dict(zip(rows[0], rows[1]))
+    assert got['分支'] == 'done-task' and got['序号'] == 11 and got['交付完整性'] == 3
+    # 长数字 ID 按文本写入，不被转成科学计数法
+    assert got['SessionID'] == '0123456789012345678' and got['Feedback'] == '模型没跑测试 给3分'
+    link = ws.cell(row=2, column=submission.COLUMNS.index('初始环境快照') + 1)
+    assert link.hyperlink.target == 'https://github.com/org/repo/commit/' + 'a' * 40
+    # 勾选时只导出勾选的题目
+    r = client.post('/api/submission/xlsx', json={'ids': [other, done]})
+    names = [x[1] for x in load_workbook(io.BytesIO(r.content)).active.iter_rows(min_row=2, values_only=True)]
+    assert names == ['done-task', 'check-task']
+
+
 def test_recordings_latest(client, tmp_path):
     """录屏目录按修改时间倒序列出 mp4，并给出 Windows 路径。"""
     import os
