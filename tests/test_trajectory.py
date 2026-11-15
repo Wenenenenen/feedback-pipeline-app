@@ -75,10 +75,22 @@ def test_follow_up_rejected(tmp_path):
     assert any('追问' in e for e in v['errors'])
 
 
-@pytest.mark.parametrize('tool,word', [('Skill', 'Skill'), ('mcp__fetch__fetch', 'MCP'), ('Agent', '子代理')])
-def test_forbidden_tools(tmp_path, tool, word):
-    _, v = check(tmp_path, base(tools=[(tool, {}, False)]))
+@pytest.mark.parametrize('tool,inp,word', [
+    ('Skill', {'skill': 'brainstorming'}, 'brainstorming'),
+    ('Skill', {}, '非内置 skill'),
+    ('mcp__fetch__fetch', {}, 'MCP'),
+    ('Agent', {}, '子代理'),
+])
+def test_forbidden_tools(tmp_path, tool, inp, word):
+    _, v = check(tmp_path, base(tools=[(tool, inp, False)]))
     assert any(word in e for e in v['errors'])
+
+
+def test_builtin_skill_call_allowed(tmp_path):
+    # 模型主动加载内置 skill（如画波形时加载 dataviz）不算违规
+    info, v = check(tmp_path, base(tools=[('Skill', {'skill': 'dataviz'}, False)]))
+    assert info['skill_calls'] == ['dataviz']
+    assert v['errors'] == []
 
 
 def test_extra_skill(tmp_path):

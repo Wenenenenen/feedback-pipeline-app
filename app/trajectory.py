@@ -68,6 +68,8 @@ def parse(path: Path) -> dict:
         'path': str(path), 'session_id': None, 'version': None, 'cwd': None,
         'models': collections.Counter(), 'requested_models': collections.Counter(),
         'efforts': collections.Counter(), 'tools': collections.Counter(), 'skills': [],
+        # Skill 工具调用的 skill 名，按调用顺序记录，缺参数时记为空串
+        'skill_calls': [],
         'prompts': human_prompts(rows), 'final_text': '', 'last_timestamp': None,
     }
     for r in rows:
@@ -95,6 +97,9 @@ def parse(path: Path) -> dict:
                     continue
                 if x.get('type') == 'tool_use':
                     info['tools'][x.get('name')] += 1
+                    if x.get('name') == 'Skill':
+                        inp = x.get('input') if isinstance(x.get('input'), dict) else {}
+                        info['skill_calls'].append(str(inp.get('skill') or ''))
                 elif x.get('type') == 'text' and x.get('text', '').strip():
                     info['final_text'] = x['text']
     return info
@@ -150,8 +155,11 @@ def validate(info: dict, prompt: str, expected_model: str | None,
         if bad:
             errors.append(f'存在追问或纠错输入 {len(bad)} 条：' + _norm(bad[0]['text'])[:60])
     tools = info['tools']
-    if tools.get('Skill'):
-        errors.append(f"轨迹中有 Skill 调用 {tools['Skill']} 次")
+    # 模型主动调用 Claude Code 内置 skill 属于正常行为，只拦截调用非内置 skill
+    bad_calls = [s for s in info.get('skill_calls', []) if s not in builtin_skills]
+    if bad_calls:
+        names = ', '.join(sorted({s or '（未知）' for s in bad_calls}))
+        errors.append(f'轨迹中调用非内置 skill {len(bad_calls)} 次：{names}')
     mcp = sum(v for k, v in tools.items() if k and k.startswith('mcp__'))
     if mcp:
         errors.append(f'轨迹中有 MCP 调用 {mcp} 次')

@@ -146,7 +146,7 @@ WSL  ~/jianzhi/feedback-record/<分支名>/              录屏用的产物全�
 - 在 WSL 的 `~/.claude/projects/<做题目录编码>/` 下定位本题轨迹 jsonl：排除已作废的 SessionID，取最新一个首条用户输入与 prompt 原文一致的会话。
 - 校验：
   - 用户输入只有 prompt 原文一条，或其后仅跟「继续」（此时自动在备注中写入中断次数与处理方式）；
-  - 无 Skill、MCP、子代理调用；轨迹中的 skill 列表只包含 Claude Code 内置 skill；
+  - 无 MCP、子代理调用；Skill 调用只允许调用 Claude Code 内置 skill（如模型画图时自行加载 `dataviz`）；轨迹中的 skill 列表只包含 Claude Code 内置 skill；
   - 轨迹中的模型与 5.3 记录的 `ANTHROPIC_MODEL` 一致；
   - 每条模型回复的推理强度均为 `high`。
 - 提取：SessionID、TurnID/PromptID（第一轮 user 消息的 `promptId`）、Harness（固定 Claude Code）、Harness 版本、模型、操作系统（固定「MacOS/Linux」）、工作目录、做题完成时间。
