@@ -45,7 +45,7 @@ async def _no_stale_static(request, call_next):
 EDITABLE = {
     'user_prompt', 'domain', 'subdomain', 'difficulty', 'lang_framework', 'acceptance_points',
     'materials', 'env_requirements', 'remark', 'reproducibility', 'feedback', 'score_reason',
-    'delivery_score', 'record_steps', 'evidence', 'recording_link',
+    'delivery_score', 'record_steps', 'record_prep', 'evidence', 'recording_link',
 }
 
 

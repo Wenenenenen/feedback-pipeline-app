@@ -393,7 +393,9 @@ async function showTask(id) {
   const ro = on => on ? '' : 'readonly';
   const evidence = (t.evidence || []).map(e => `<tr><td>${esc(e.phenomenon)}</td><td>${codeBlock(e.command)}</td>
       <td>${esc(e.output_excerpt)}</td><td>${e.recordable ? '可录' : '不可录'}${e.needs_recording_confirm ? '<br><span class="chip human">需录屏确认</span>' : ''}</td></tr>`).join('');
-  const steps = (t.record_steps || []).map(s => `<li><div>${esc(s.action)}${codeBlock(s.command)}<span class="muted">预期 ${esc(s.expect)}</span></div></li>`).join('');
+  const steps = (t.record_steps || []).map(s => `<li><div>${esc(s.action)}${s.command ? codeBlock(s.command) : ''}<span class="muted">预期 ${esc(s.expect)}</span></div></li>`).join('');
+  // 录屏前准备与录完收尾不录，旧题没有这一项时不显示
+  const prep = t.record_prep || {};
   const levels = META.repro_levels || [];
   const repro = t.reproducibility ?? '';
   const reproKnown = levels.includes(repro);
@@ -483,8 +485,10 @@ async function showTask(id) {
     </div>`, t.delivery_score ? `评分 ${esc(t.delivery_score)}` : '')}
 
     ${panel(t, 'record', '录屏', `<div class="fields">
-      ${field('录屏目录', `${codeBlock('cd ' + t.record_dir)}<div class="muted hint">待录屏阶段点「准备录屏环境」后 产物快照会全新克隆到这里 录屏步骤的命令都在这个目录下执行</div>`)}
-      ${field('录屏步骤', steps ? `${(t.record_issues || []).length ? issuesHtml(t.record_issues) : ''}<ol class="steps">${steps}</ol>` : plain(''))}
+      ${field('录屏目录', `${codeBlock('cd ' + t.record_dir)}<div class="muted hint">待录屏阶段点「准备录屏环境」后 产物快照会全新克隆到这里 录屏前准备 录屏步骤和收尾的命令都在这个目录下执行</div>`)}
+      ${prep.setup ? field('录屏前准备', `${codeBlock(prep.setup)}<div class="muted hint">开录前在录屏目录终端执行 安装依赖并后台启动服务 这部分不录</div>`) : ''}
+      ${field('录屏步骤', steps ? `${(t.record_issues || []).length ? issuesHtml(t.record_issues) : ''}<div class="muted hint">从这里开始录 直接在产物页面上操作出问题</div><ol class="steps">${steps}</ol>` : plain(''))}
+      ${prep.cleanup ? field('录完收尾', `${codeBlock(prep.cleanup)}<div class="muted hint">停止录制后执行 不录</div>`) : ''}
       ${field('录屏文件', S === '待录屏'
         ? `<div class="inline"><select id="f-recording_link">${t.recording_link ? `<option selected>${esc(t.recording_link)}</option>` : '<option value="">读取录屏目录中</option>'}</select>
             <button type="button" data-rec-refresh="1">重新读取</button></div><div id="rec-info" class="rec-info"></div>`

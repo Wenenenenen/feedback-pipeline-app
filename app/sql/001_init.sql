@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS qa_task (
     score_reason        TEXT,                               -- 评分理由
     feedback            TEXT,                               -- Feedback 文本
     record_steps        TEXT,                               -- 录屏步骤（JSON 数组）
+    record_prep         TEXT,                               -- 录屏前准备与录完收尾的命令，不录（JSON 对象 setup cleanup）
     review_self_check   TEXT,                               -- 验收自检结果（JSON）
     review_comment      TEXT,                               -- 打回意见
     remark              TEXT,                               -- 备注

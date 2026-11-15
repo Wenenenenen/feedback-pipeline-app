@@ -7,6 +7,15 @@
     "remark": { "type": "string" },
     "reproducibility": { "type": "string", "enum": ["无外部依赖", "有外部依赖，未容器化", "已容器化，可一键起环境"] },
     "need_rerecord": { "type": "boolean" },
+    "record_prep": {
+      "type": "object",
+      "properties": {
+        "setup": { "type": "string" },
+        "cleanup": { "type": "string" }
+      },
+      "required": ["setup", "cleanup"],
+      "additionalProperties": false
+    },
     "record_steps": {
       "type": "array",
       "items": {
@@ -34,6 +43,6 @@
     }
   },
   "required": ["summary", "delivery_score", "feedback", "remark", "reproducibility", "need_rerecord",
-               "record_steps", "self_check"],
+               "record_prep", "record_steps", "self_check"],
   "additionalProperties": false
 }

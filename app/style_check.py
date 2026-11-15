@@ -103,8 +103,11 @@ def check_feedback(text: str) -> list[dict]:
 FEEDBACK_BANNED = [
     '见feedback原文', '见原文', '见文件与行号', '见上文', '同上', '评审方', '验收方', '本轮任务',
     '原始轨迹', '验收结论', '整体表现不错', '整体表现良好', '表现优秀', '仍有提升空间', '有待提升',
-    '有改进空间', '建议修复', '综合来看',
+    '有改进空间', '建议修复', '还需修复', '综合来看',
 ]
+
+# Feedback 专用：千篇一律的固定开头，直接从最关键的事实写起
+_FIXED_OPENING = re.compile(r'^\s*我让(模型|它|ai|claude)')
 
 # Feedback 专用：工具链或 shell 环境噪声，质检认定不能算作模型的过程问题
 TOOLCHAIN_NOISE = ['git bash', 'gitbash', 'msys', '路径转换']
@@ -128,6 +131,9 @@ def check_feedback_content(text: str, score=None) -> list[dict]:
         i = low.find(w)
         if i >= 0:
             issues.append(_issue(f'质检会打回的表达 {w}', text, i))
+    if _FIXED_OPENING.match(low):
+        issues.append({'rule': '固定开头 不要以我让模型做某事开头 直接从最关键的事实写起',
+                       'excerpt': text.strip()[:24]})
     for w in TOOLCHAIN_NOISE:
         i = low.find(w)
         if i >= 0:

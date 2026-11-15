@@ -15,7 +15,7 @@ OPERATOR = 'pipeline'
 JSON_FIELDS = {
     'acceptance_points', 'materials', 'env_requirements', 'ignored_before', 'client_check',
     'env_check', 'net_check', 'voided_sessions', 'traj_summary', 'evidence', 'record_steps',
-    'review_self_check',
+    'record_prep', 'review_self_check',
 }
 
 # 质检记录表中以 JSON 文本存储的字段

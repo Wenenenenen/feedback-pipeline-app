@@ -124,3 +124,14 @@ def test_feedback_content_rejects_template_phrases():
     assert any('评审方' in r for r in rs) and any('整体表现不错' in r for r in rs)
     # 版本号和小数不算代码锚点
     assert any('代码锚点' in r for r in content_rules('node版本v22.23 误差0.08毫秒 给5分', 5))
+
+
+def test_feedback_fixed_opening_flagged():
+    """不要每篇都以我让模型做某事开头；正文里出现我让模型不拦。"""
+    text = ('我让模型做局部频谱修复 最终提交里dsp.js:36的decodewav截短data块不报错 '
+            '模型只测了非音频导入 问题仍在 编辑和导入校验还需修复 给3分')
+    rs = content_rules(text, 3)
+    assert any('固定开头' in r for r in rs) and any('还需修复' in r for r in rs)
+    ok = ('模型只测了非音频导入 最终提交里dsp.js:36的decodewav截短data块不报错 '
+          '截断文件也被接收 问题仍在 给3分')
+    assert content_rules(ok, 3) == []

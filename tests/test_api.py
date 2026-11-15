@@ -539,7 +539,8 @@ def fake_rework(monkeypatch, result: dict, new_sha: str | None = None):
         seen['skill'], seen['text'] = skill, text
         base = {'summary': '删掉了环境现象的过程归因', 'delivery_score': 2, 'feedback': NEW_FB,
                 'remark': '', 'reproducibility': '无外部依赖', 'need_rerecord': False,
-                'record_steps': [{'action': '启动', 'command': 'npm start', 'expect': '白屏'}],
+                'record_prep': {'setup': 'npm start &', 'cleanup': ''},
+                'record_steps': [{'action': '打开页面', 'command': 'http://localhost:20400', 'expect': '白屏'}],
                 'self_check': {'has_process': True, 'has_product': True, 'has_code_anchor': True,
                                'score_consistent': True, 'note': 'ok'}}
         return {**base, **result}
@@ -572,13 +573,29 @@ def test_record_issues(client):
     assert any(r.startswith('第1步') and '路径' in r for r in rules)
     assert any(r.startswith('第2步') and '像素' in r for r in rules)
     good = [
-        {'action': '后台启动服务', 'command': 'nohup bash scripts/start.sh 20400 > .qa/record.log 2>&1 &',
-         'expect': '浏览器打开 localhost:20400 可见场景下拉框'},
-        {'action': '在场景下拉框选 gradient.json 后在控制台粘贴脚本选中像素',
-         'command': "pick(192, 300)", 'expect': '面板显示红分量 0.6635'},
+        {'action': '浏览器打开页面 在场景下拉框选 gradient.json', 'command': 'http://localhost:20400',
+         'expect': '画面出现渐变 右侧面板红分量 0.6635'},
+        {'action': '点导入按钮 在文件选择框里选录屏目录 .qa 下的 truncated.wav', 'command': '',
+         'expect': '仍显示分析完成 没有截断提示'},
     ]
-    assert pipeline.record_issues(good) == []
+    prep = {'setup': 'nohup bash scripts/start.sh 20400 > .qa/record.log 2>&1 & echo $! > .qa/record.pid',
+            'cleanup': 'kill "$(cat .qa/record.pid)"'}
+    assert pipeline.record_issues(good, prep) == []
     assert pipeline.record_issues(None) == []
+    # 录制部分不放启动结束服务、临时脚本和控制台注入
+    scripted = [
+        {'action': '后台启动服务', 'command': 'nohup python3 -m http.server 20800 &', 'expect': '服务运行'},
+        {'action': '生成截断文件', 'command': "python3 - <<'PY'\nprint(1)\nPY", 'expect': '生成'},
+        {'action': '控制台导入', 'command': "document.querySelector('#f').dispatchEvent(new Event('change'))",
+         'expect': '导入'},
+    ]
+    rules = [i['rule'] for i in pipeline.record_issues(scripted)]
+    assert any(r.startswith('第1步') and '录屏前准备' in r for r in rules)
+    assert any(r.startswith('第2步') and '临时脚本' in r for r in rules)
+    assert any(r.startswith('第3步') and '控制台脚本' in r for r in rules)
+    # 录屏前准备也要能在录屏目录终端里直接执行
+    bad_prep = {'setup': "wsl.exe -d Ubuntu-24.04 -- bash -ic 'npm i'", 'cleanup': ''}
+    assert any(i['rule'].startswith('录屏前准备') for i in pipeline.record_issues([], bad_prep))
 
 
 def test_rework_flow_with_fake_codex(client, monkeypatch):
@@ -592,6 +609,8 @@ def test_rework_flow_with_fake_codex(client, monkeypatch):
     assert wait_run(key)['status'] == 'success'
     assert seen['skill'] == 'qa-rework' and '本次质检（第1轮）' in seen['text']
     assert '## 录屏环境' in seen['text'] and 'feedback-record' in seen['text']
+    assert '录屏前准备（不录）' in seen['text'] and 'Windows 访问路径' in seen['text']
+    assert db.get_task(tid)['record_prep'] == {'setup': 'npm start &', 'cleanup': ''}
     assert '原轨第12行' in seen['text'] and '修复目录' in seen['text'] and GOOD_FEEDBACK in seen['text']
     t = db.get_task(tid)
     assert t['status'] == pipeline.S_DONE and t['feedback'] == NEW_FB

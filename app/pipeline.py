@@ -29,7 +29,7 @@ I_OPEN = '返修中'
 I_DONE = '已返修'
 # 返修前留存快照的提交字段，用于列出提交表里改了哪些格
 SNAPSHOT_FIELDS = ('feedback', 'delivery_score', 'score_reason', 'remark', 'reproducibility',
-                   'record_steps', 'artifact_sha', 'recording_link', 'lang_framework')
+                   'record_steps', 'record_prep', 'artifact_sha', 'recording_link', 'lang_framework')
 
 # 出题只限定在「游戏、图形与多媒体」这一主领域，作业文档中的其他领域不再出题
 DOMAINS = {
@@ -95,7 +95,7 @@ def view(t: dict) -> dict:
     """附加页面需要的派生字段。"""
     t = dict(t)
     t['feedback_issues'] = feedback_issues(t.get('feedback'), t.get('delivery_score'))
-    t['record_issues'] = record_issues(t.get('record_steps'))
+    t['record_issues'] = record_issues(t.get('record_steps'), t.get('record_prep'))
     # 轨迹要在 Windows 文件选择框里上传，页面展示 Windows 侧路径
     t['trajectory_win'] = config.unc(t['trajectory_path']) if t.get('trajectory_path') else ''
     t['prompt_issues'] = style_check.check_prompt(t.get('user_prompt'))
@@ -414,12 +414,25 @@ def _record_lines(t: dict) -> list[str]:
     rdir = config.path_of('record_root') / t['branch']
     return ['## 录屏环境',
             f'录屏目录 {rdir}（产物快照的全新克隆，不含依赖）',
-            '录屏时人在 WSL 终端里先 cd 到录屏目录，再照录屏步骤逐条粘贴执行；浏览器用 Windows 本机浏览器按 localhost 加端口访问',
-            '录屏步骤的命令直接在这个终端里执行：用相对路径，不加 wsl.exe 或 bash -ic 包装，不出现验收目录、修复目录的路径']
+            f'录屏目录的 Windows 访问路径 {unc(rdir)}（浏览器文件选择框里选录屏目录下的文件时用）',
+            '录屏前人在 WSL 终端里先 cd 到录屏目录，粘贴录屏前准备的命令（安装依赖、后台启动服务），这部分不录；'
+            '开始录制后直接在 Windows 本机浏览器按 localhost 加端口打开产物页面，照录屏步骤操作；录完再执行收尾命令结束服务，同样不录',
+            '命令直接在这个终端里执行：用相对路径，不加 wsl.exe 或 bash -ic 包装，不出现验收目录、修复目录的路径']
 
 
-def record_issues(steps) -> list[dict]:
-    """录屏步骤的规则检查：命令要能在录屏目录的终端里直接执行，操作要人工能快速完成。"""
+# 录屏步骤（真正录制的部分）专用：启动结束服务、临时脚本、控制台注入都不该出现在录制里
+_RECORD_ONLY_RULES = [
+    (r'\bnohup\b|\bkill\b|http\.server|\bnpm\s+(i|install|ci)\b|\bpip\s+install\b',
+     '安装依赖或启动结束服务 放到不录的录屏前准备与收尾'),
+    (r'<<|\bpython3?\s+-\s|\bnode\s+-e\b',
+     '在录屏里跑临时脚本复现 改成产物页面上的正常操作 需要的输入文件在录屏前准备里生成'),
+    (r'document\.|window\.|dispatchEvent|createObjectURL',
+     '用控制台脚本复现 除非必须定位精确像素 改成产物页面上的正常操作'),
+]
+
+
+def record_issues(steps, prep=None) -> list[dict]:
+    """录屏步骤的规则检查：命令要能在录屏目录的终端里直接执行，录制部分只放产物页面上的操作。"""
     work_dirs = '|'.join(re.escape(config.path_of(k).name) for k in ('verify_root', 'tasks_root'))
     rules = [
         (r'wsl(\.exe)?\s+-d|bash\s+-ic', '带了 wsl.exe 或 bash -ic 包装 录屏时直接在录屏目录的终端里执行'),
@@ -430,10 +443,17 @@ def record_issues(steps) -> list[dict]:
     issues = []
     for n, s in enumerate(steps or [], 1):
         text = ' '.join(str(s.get(k) or '') for k in ('action', 'command', 'expect'))
-        for pat, rule in rules:
+        for pat, rule in rules + _RECORD_ONLY_RULES:
             m = re.search(pat, text)
             if m:
                 issues.append({'rule': f'第{n}步 {rule}', 'excerpt': m.group(0)[:60]})
+    # 录屏前准备与收尾不录，只查命令能否在录屏目录终端里直接执行
+    for key, name in (('setup', '录屏前准备'), ('cleanup', '录完收尾')):
+        text = str((prep or {}).get(key) or '')
+        for pat, rule in rules[:2]:
+            m = re.search(pat, text)
+            if m:
+                issues.append({'rule': f'{name} {rule}', 'excerpt': m.group(0)[:60]})
     return issues
 
 
@@ -477,12 +497,12 @@ def start_review(task_id: int) -> str:
         r = codex_runner.run_skill('qa-review', text, run_key, log, stop)
         issues = feedback_issues(r['feedback'], r['delivery_score'])
         log(f"评分 {r['delivery_score']} 口吻与内容问题 {len(issues)} 条 "
-            f"录屏步骤问题 {len(record_issues(r['record_steps']))} 条 "
+            f"录屏步骤问题 {len(record_issues(r['record_steps'], r.get('record_prep')))} 条 "
             f"自检一致 {r['self_check']['score_consistent']}")
         db.update_task(task_id, evidence=r['evidence'], delivery_score=r['delivery_score'],
                        score_reason=r['score_reason'], feedback=r['feedback'],
-                       record_steps=r['record_steps'], reproducibility=r['reproducibility'],
-                       remark=r['remark'], review_self_check=r['self_check'],
+                       record_steps=r['record_steps'], record_prep=r.get('record_prep'),
+                       reproducibility=r['reproducibility'], remark=r['remark'], review_self_check=r['self_check'],
                        status=S_CHECK, failed_from=None, last_error=None)
 
     return jobs.submit('qa-review', task_id, work, ai=True)
@@ -620,12 +640,15 @@ def inspections_view(t: dict) -> list[dict]:
 
 def _snapshot_lines(snap: dict) -> list[str]:
     steps = snap.get('record_steps') or []
+    prep = snap.get('record_prep') or {}
     return [f"交付完整性 {snap.get('delivery_score')}",
             f"环境可复现等级 {snap.get('reproducibility') or '未填'}",
             '评分理由：', snap.get('score_reason') or '无',
             'Feedback：', snap.get('feedback') or '无',
             '备注：', snap.get('remark') or '无',
-            '录屏步骤：', *([dumps(s) for s in steps] or ['无'])]
+            '录屏前准备（不录）：', prep.get('setup') or '无',
+            '录屏步骤：', *([dumps(s) for s in steps] or ['无']),
+            '录完收尾（不录）：', prep.get('cleanup') or '无']
 
 
 def _inspection_text(i: dict) -> list[str]:
@@ -711,7 +734,7 @@ def start_rework(task_id: int) -> str:
         changed = art['sha'] != t['artifact_sha']
         fields = dict(feedback=r['feedback'], delivery_score=r['delivery_score'], remark=r['remark'],
                       reproducibility=r['reproducibility'], record_steps=r['record_steps'],
-                      review_self_check=r['self_check'], failed_from=None, last_error=None)
+                      record_prep=r.get('record_prep'), review_self_check=r['self_check'], failed_from=None, last_error=None)
         if changed:
             log(f"产物快照 {config.permalink(t['artifact_sha'])} → {config.permalink(art['sha'])}")
             fields['artifact_sha'] = art['sha']
