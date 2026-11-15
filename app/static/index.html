@@ -17,6 +17,7 @@
     <button data-tab="tasks" class="tab active">题目</button>
     <button data-tab="gen" class="tab">批量出题</button>
     <button data-tab="config" class="tab">配置</button>
+    <button id="log-open" class="nav-btn" title="打开运行日志 运行中的任务各占一个标签">日志</button>
   </nav>
 </header>
 
@@ -75,8 +76,8 @@
 
 <!-- 运行日志 -->
 <div id="log-panel" class="hidden">
-  <div class="log-head"><span id="log-title"></span><span id="log-status"></span>
-    <button id="log-stop">停止</button><button id="log-close">关闭</button></div>
+  <div class="log-head"><div id="log-tabs" role="tablist"></div><span id="log-status"></span>
+    <button id="log-stop">停止</button><button id="log-close">关闭全部</button></div>
   <pre id="log-body"></pre>
 </div>
 <!-- 提交表弹窗：每道题一块，单元格点击即复制 -->

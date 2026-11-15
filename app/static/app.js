@@ -5,8 +5,9 @@ const $ = (s, el = document) => el.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let META = { statuses: [], domains: {} };
 let current = null;      // 当前详情题目 id
-let logRun = null;       // 正在查看的运行 ID
-let logOffset = 0;
+// 运行日志：每个运行一个标签，各自记录读取位置与已读内容，运行中的都在后台轮询
+const logTabs = new Map();  // run_key → {title, offset, text, status, error}
+let logRun = null;          // 正在查看的运行 ID
 let logTimer = null;
 
 // ---------- 通用 ----------
@@ -587,41 +588,111 @@ async function saveReview(id) {
 
 // ---------- 运行日志 ----------
 function openLog(runKey, title) {
+  // 已打开的运行直接切过去，不重读内容；新运行追加一个标签
+  if (!logTabs.has(runKey)) logTabs.set(runKey, { title, offset: 0, text: '', status: 'running', error: '' });
   logRun = runKey;
-  logOffset = 0;
-  $('#log-title').textContent = title;
-  $('#log-body').textContent = '';
   $('#log-panel').classList.remove('hidden');
   // 日志抽屉打开时给两侧面板让出高度
   document.body.classList.add('log-open');
-  clearInterval(logTimer);
-  pollLog();
-  logTimer = setInterval(pollLog, 1500);
+  renderLogTabs();
+  showLogBody(true);
+  pollLogs();
+  if (!logTimer) logTimer = setInterval(pollLogs, 1500);
 }
 
-async function pollLog() {
-  if (!logRun) return;
-  const key = logRun;
-  const r = await api(`/api/runs/${key}/log?offset=${logOffset}`).catch(() => null);
-  if (!r || key !== logRun) return;
+function logStatusText(t) {
+  return t.status === 'running' ? '运行中' : t.status === 'success' ? '成功' : '失败 ' + (t.error || '');
+}
+
+function renderLogTabs() {
+  $('#log-tabs').innerHTML = [...logTabs].map(([k, t]) =>
+    `<span class="log-tab${k === logRun ? ' active' : ''}" role="tab" data-run="${esc(k)}" title="${esc(t.title)}">
+      <i class="dot ${esc(t.status)}"></i><span class="name">${esc(t.title)}</span>
+      <button type="button" class="x" data-close="${esc(k)}" title="关闭这个日志">×</button></span>`).join('');
+  $('#log-tabs').querySelectorAll('[data-run]').forEach(el => el.onclick = e => {
+    if (e.target.dataset.close) return closeLog(e.target.dataset.close);
+    logRun = el.dataset.run;
+    renderLogTabs();
+    showLogBody(true);
+  });
+  const cur = logTabs.get(logRun);
+  $('#log-status').textContent = cur ? logStatusText(cur) : '';
+  $('#log-stop').disabled = !cur || cur.status !== 'running';
+}
+
+// 切换标签时整体替换内容并滚到底部；同一标签追加内容时只在原本就在底部时跟随
+function showLogBody(reset, appended = '') {
   const body = $('#log-body');
+  const cur = logTabs.get(logRun);
+  if (reset) {
+    body.textContent = cur ? cur.text : '';
+    body.scrollTop = body.scrollHeight;
+    return;
+  }
   const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;
-  body.textContent += r.text;
-  logOffset = r.offset;
+  body.textContent += appended;
   if (atBottom) body.scrollTop = body.scrollHeight;
-  $('#log-status').textContent = r.status === 'running' ? '运行中' : r.status === 'success' ? '成功' : '失败 ' + (r.error || '');
-  if (r.status !== 'running') {
-    clearInterval(logTimer);
-    loadList();
-    if (current) showTask(current);
-    if (!$('#tab-gen').classList.contains('hidden')) loadGenRuns();
+}
+
+let logPolling = false;
+async function pollLogs() {
+  if (logPolling) return;
+  logPolling = true;
+  try {
+    const running = [...logTabs].filter(([, t]) => t.status === 'running' || !t.offset);
+    let finished = false;
+    await Promise.all(running.map(async ([key, t]) => {
+      const r = await api(`/api/runs/${key}/log?offset=${t.offset}`).catch(() => null);
+      // 读取期间标签被关掉了就丢弃结果
+      if (!r || logTabs.get(key) !== t) return;
+      t.text += r.text;
+      t.offset = r.offset;
+      if (t.status === 'running' && r.status !== 'running') finished = true;
+      t.status = r.status;
+      t.error = r.error || '';
+      if (key === logRun && r.text) showLogBody(false, r.text);
+    }));
+    renderLogTabs();
+    if (finished) {
+      loadList();
+      if (current) showTask(current);
+      if (!$('#tab-gen').classList.contains('hidden')) loadGenRuns();
+    }
+    if (![...logTabs.values()].some(t => t.status === 'running')) { clearInterval(logTimer); logTimer = null; }
+  } finally {
+    logPolling = false;
   }
 }
-$('#log-close').onclick = () => {
-  clearInterval(logTimer); logRun = null;
+
+function closeLog(key) {
+  logTabs.delete(key);
+  if (!logTabs.size) return closeAllLogs();
+  if (key === logRun) {
+    logRun = [...logTabs.keys()].pop();
+    showLogBody(true);
+  }
+  renderLogTabs();
+}
+
+function closeAllLogs() {
+  clearInterval(logTimer); logTimer = null;
+  logTabs.clear(); logRun = null;
   $('#log-panel').classList.add('hidden');
   document.body.classList.remove('log-open');
-};
+}
+$('#log-close').onclick = closeAllLogs;
+
+// 手动打开日志：所有运行中的运行补成标签；既没有运行中的也没有已打开的标签时，打开最近一次运行
+async function openLogsManually() {
+  const [runs, tasks] = await Promise.all([api('/api/runs'), api('/api/tasks')]);
+  const branch = Object.fromEntries(tasks.map(t => [t.id, t.branch]));
+  const title = r => `${r.task_id ? branch[r.task_id] || '#' + r.task_id : '批量出题'} ${r.kind}`;
+  // 接口按时间倒序，反过来让最新的运行排在最右并成为当前标签
+  runs.filter(r => r.status === 'running').reverse().forEach(r => openLog(r.run_key, title(r)));
+  if (!logTabs.size && runs[0]) openLog(runs[0].run_key, title(runs[0]));
+  if (!logTabs.size) toast('还没有运行记录');
+}
+$('#log-open').onclick = () => run(openLogsManually);
 $('#log-stop').onclick = () => run(async () => { if (logRun) await api(`/api/runs/${logRun}/stop`, { method: 'POST' }); toast('已发送停止'); });
 
 // ---------- 批量出题 ----------
