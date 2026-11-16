@@ -191,6 +191,9 @@ try { setListCollapsed(localStorage.getItem('list-collapsed') === '1'); } catch 
 
 // ---------- 提交表 ----------
 // 粘贴到表格时，含换行、制表符或引号的单元格要用引号包起来
+// 「复制整行」与「复制表头」不带的列（甲方表格里没有或不需要粘贴的）
+const ROW_COPY_SKIP = new Set(['序号', '分支', '备注']);
+
 function tsvCell(v) {
   const s = String(v ?? '');
   return /[\t\n\r"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
@@ -307,7 +310,7 @@ async function loadSubmission() {
   B.querySelectorAll('[data-row-copy]').forEach(b => b.onclick = e => {
     e.preventDefault();
     e.stopPropagation();
-    copyText(data.rows[+b.dataset.rowCopy].cells.map(c => tsvCell(c.value)).join('\t'));
+    copyText(data.rows[+b.dataset.rowCopy].cells.filter(c => !ROW_COPY_SKIP.has(c.name)).map(c => tsvCell(c.value)).join('\t'));
   });
   // 只复制最近一轮返修改过的格：每行「列名 制表符 新值」，按提交表列顺序
   B.querySelectorAll('[data-changed-copy]').forEach(b => b.onclick = e => {
@@ -336,7 +339,8 @@ async function loadSubmission() {
   B.querySelectorAll('[data-client-slot]').forEach(bindClientMark);
   $('#sub-expand').onclick = () => B.querySelectorAll('details.sub-row').forEach(d => { d.open = true; });
   $('#sub-collapse').onclick = () => B.querySelectorAll('details.sub-row').forEach(d => { d.open = false; });
-  $('#sub-copy-head').onclick = () => copyText(data.columns.join('\t'));
+  // 表头与「复制整行」去掉同样的列，粘贴后列对得上
+  $('#sub-copy-head').onclick = () => copyText(data.columns.filter(c => !ROW_COPY_SKIP.has(c)).join('\t'));
   $('#sub-xlsx').disabled = !data.rows.length;
   $('#sub-xlsx').onclick = () => run(() => downloadSubmission(ids));
 }
