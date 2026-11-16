@@ -63,10 +63,25 @@ def is_ancestor(cwd: Path, a: str, b: str) -> bool:
     return p.returncode == 0
 
 
+def _half_initialized(task_dir: Path) -> bool:
+    """目录是否只是上次初始化中途失败留下的：只有 .git 与 .gitignore，且还没有任何提交。"""
+    if not {p.name for p in task_dir.iterdir()} <= {'.git', '.gitignore'}:
+        return False
+    if not (task_dir / '.git').is_dir():
+        return True
+    return subprocess.run(['git', 'rev-parse', '--verify', '-q', 'HEAD'], cwd=task_dir,
+                          capture_output=True).returncode != 0
+
+
 def init_task_dir(task_dir: Path, branch: str, repo: str, log=None):
     """创建做题目录并初始化为孤儿分支，此时不推送。"""
     if task_dir.exists() and any(task_dir.iterdir()):
-        raise GitError(f'做题目录已存在且非空：{task_dir}')
+        # 上次初始化中途失败（如查询远端分支时网络出错）只留下空仓库，清掉后重新初始化
+        if not _half_initialized(task_dir):
+            raise GitError(f'做题目录已存在且非空：{task_dir}')
+        if log:
+            log(f'做题目录只有上次初始化中途留下的空仓库，清理后重新初始化 {task_dir}')
+        shutil.rmtree(task_dir)
     task_dir.mkdir(parents=True, exist_ok=True)
     git(task_dir, 'init', '-b', branch, log=log)
     git(task_dir, 'remote', 'add', 'origin', repo, log=log)

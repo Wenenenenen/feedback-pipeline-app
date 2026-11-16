@@ -85,6 +85,8 @@ DEFAULTS = {
     'recording_dir': '/mnt/e/GSB-Recordings',
     # 待上传文件目录（WSL 路径）：收集留存的轨迹与自动录屏放在一起，文件名为「甲方序号-分支名」
     'upload_dir': '/mnt/e/WorkSpace/jianzhi/feedback-upload',
+    # 准备环境时自动确认显卡能力（依赖显卡的题不再停在待准备环境等人工确认，环境检查明细里注明已自动确认）
+    'gpu_auto_confirm': True,
     # ---------- 自动出题与自动做题 ----------
     # 补充题目池每轮出题数量
     'pool_gen_count': 10,

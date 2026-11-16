@@ -196,6 +196,61 @@ def test_tick_picks_next_after_claude_started(data_dir, fake_steps):
     assert fake_steps == [('start_prepare', b)] and db.get_task(c)['auto_run'] == 0
 
 
+def test_tick_joined_init_tasks_queue_on_prep_line(data_dir, fake_steps):
+    """人工交给自动的多道待初始化题按 id 排队，一次只准备一道，前一道开始做题后才准备下一道。"""
+    a, b, c = (new_task(auto_run=1) for _ in range(3))
+    pool = new_task()
+    autopilot.tick()
+    assert fake_steps == [('start_prepare', a)] and db.get_task(pool)['auto_run'] == 0
+    # 准备中（任务在跑）：其余排队
+    fake_steps.busy.add(a)
+    fake_steps.clear()
+    autopilot.tick()
+    assert fake_steps == []
+    # 准备好进入待做题、Claude Code 还没开始做：启动做题，仍占准备线
+    fake_steps.busy.discard(a)
+    db.update_task(a, status=P.S_DO)
+    autopilot.tick()
+    assert fake_steps == [('start_auto_do', a)]
+    # prompt 发出后准备下一道
+    fake_steps.busy.add(a)
+    claude_driver._mark_started(a, True)
+    fake_steps.clear()
+    autopilot.tick()
+    assert fake_steps == [('start_prepare', b)]
+    assert db.get_task(c)['auto_run'] == 1 and db.get_task(pool)['auto_run'] == 0
+    # 排队中的题在工具栏的准备线显示时排在正在准备的题后面
+    fake_steps.busy.add(b)
+    assert [x['id'] for x in autopilot.status()['do']['preparing']] == [b, c]
+
+
+def test_tick_paused_prep_does_not_block_queue(data_dir, fake_steps):
+    """停在待准备环境的题不占准备线，排队的下一道照常开始准备。"""
+    e = new_task(status=P.S_ENV, auto_run=1, materials=[{'path': 'a.png', 'state': 'missing', 'note': ''}],
+                 env_check=[], net_check=[], client_check={'items': []})
+    nxt = new_task(auto_run=1)
+    autopilot.tick()
+    assert db.get_task(e)['auto_pause'] and ('start_prepare', nxt) in fake_steps
+
+
+def test_run_do_kills_leftover_session_before_reset(data_dir, monkeypatch):
+    """上次残留的做题会话先关闭，再作废会话、恢复初始快照。"""
+    order = []
+    tid = new_task(status=P.S_DO, auto_run=1)
+    monkeypatch.setattr(claude_driver, 'alive', lambda name: 'kill' not in order)
+    monkeypatch.setattr(claude_driver, 'kill', lambda name: order.append('kill'))
+    monkeypatch.setattr(trajectory, 'list_sessions', lambda home, d: ['old'])
+
+    def fake_reset(t, log):
+        order.append('reset')
+        raise claude_driver.DriverError('到此为止')
+
+    monkeypatch.setattr(P, 'void_and_reset', fake_reset)
+    with pytest.raises(claude_driver.DriverError):
+        claude_driver.run_do(tid, lambda m: None, threading.Event())
+    assert order == ['kill', 'reset']
+
+
 def test_tick_respects_parallel_cap(data_dir, fake_steps):
     from app import config
     config.save({'do_parallel_max': 2})

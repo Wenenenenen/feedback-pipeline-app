@@ -119,8 +119,9 @@ def test_prepare_runs_everything_and_stops_only_for_manual(client, tmp_path, mon
 
 
 def test_prepare_gpu_needs_confirm(client, tmp_path, monkeypatch, git_identity):
-    """依赖显卡的题停下等人工确认，确认后自动继续并提交初始快照；脚本失败时停下并给出原因。"""
+    """关闭自动确认时，依赖显卡的题停下等人工确认，确认后自动继续并提交初始快照；脚本失败时停下并给出原因。"""
     _prepare_env(client, tmp_path, monkeypatch)
+    client.put('/api/config', json={'gpu_auto_confirm': False})
     tid = new_task(branch='gpu', status=pipeline.S_INIT, materials=[
         {'path': 'a.txt', 'source': 'script', 'url': '', 'purpose': '', 'script': 'exit 3',
          'state': 'pending', 'note': ''}],
@@ -137,6 +138,20 @@ def test_prepare_gpu_needs_confirm(client, tmp_path, monkeypatch, git_identity):
     key = client.post(f'/api/tasks/{tid}/action/confirm_gpu', json={}).json()['run_key']
     assert wait_run(key)['status'] == 'success'
     assert db.get_task(tid)['status'] == pipeline.S_DO
+
+
+def test_prepare_gpu_auto_confirm(client, tmp_path, monkeypatch, git_identity):
+    """默认自动确认显卡能力：依赖显卡的题一次准备完成进入待做题，环境检查明细注明已自动确认。"""
+    _prepare_env(client, tmp_path, monkeypatch)
+    assert client.get('/api/config').json()['gpu_auto_confirm'] is True
+    tid = new_task(branch='gpu-auto', status=pipeline.S_INIT, materials=[],
+                   env_requirements={'toolchain': [], 'needs_gpu': True, 'external_urls': []})
+    key = client.post(f'/api/tasks/{tid}/action/prepare', json={}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    t = db.get_task(tid)
+    assert t['status'] == pipeline.S_DO
+    gpu = next(i for i in t['env_check'] if i['name'] == '显卡能力')
+    assert gpu['ok'] and gpu['auto_confirmed'] and '已按配置自动确认' in gpu['detail']
 
 
 def test_wrong_state(client):

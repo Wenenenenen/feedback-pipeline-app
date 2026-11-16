@@ -31,6 +31,26 @@ def test_init_and_initial_snapshot(tmp_path, remote):
         G.init_task_dir(tmp_path / 'tasks' / 'other', 'demo', str(remote))  # 远端已有同名分支
 
 
+def test_init_retry_after_half_init(tmp_path, remote):
+    """初始化中途失败只留下空仓库时，重试会清掉后重新初始化；有其他文件或已有提交时仍拒绝。"""
+    d = tmp_path / 'tasks' / 'half'
+    d.mkdir(parents=True)
+    run(['git', 'init', '-b', 'half'], d)
+    (d / '.gitignore').write_text('.env\n', encoding='utf-8')
+    G.init_task_dir(d, 'half', str(remote))
+    assert G.git(d, 'remote', 'get-url', 'origin') == str(remote)
+    # 已有其他文件：不是中途失败留下的，拒绝
+    (d / 'a.txt').write_text('x', encoding='utf-8')
+    with pytest.raises(G.GitError, match='已存在且非空'):
+        G.init_task_dir(d, 'half', str(remote))
+    # 已有提交：同样拒绝
+    (d / 'a.txt').unlink()
+    run(['git', 'add', '.gitignore'], d)
+    run(['git', 'commit', '-m', 'x'], d)
+    with pytest.raises(G.GitError, match='已存在且非空'):
+        G.init_task_dir(d, 'half', str(remote))
+
+
 def test_artifact_with_new_ignored_files(tmp_path, remote):
     d, init, ignored = setup_task(tmp_path, remote)
     # 模拟模型：写代码、自己加了忽略规则产生的输出文件、装了依赖、写了凭据

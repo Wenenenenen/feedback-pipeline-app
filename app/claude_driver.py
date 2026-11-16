@@ -217,12 +217,16 @@ def run_do(task_id: int, log, stop):
     d = P.task_dir(t)
     home = Path(cfg['claude_home']).expanduser()
     pdir = home / 'projects' / trajectory.encode_project_dir(str(d))
+    name = session_name(task_id)
+    # 后端异常退出后 tmux 里可能还留着上次的 Claude Code：先关掉，避免恢复初始快照后它继续往做题目录里写
+    if alive(name):
+        log(f'关闭上次残留的做题会话 {name}')
+        kill(name)
     # 上次自动做题被中断或失败时会留下会话：按重做处理（作废会话、恢复初始快照）
     leftover = set(trajectory.list_sessions(home, str(d))) - set(t['voided_sessions'] or [])
     if leftover:
         log(f'发现 {len(leftover)} 个未作废的会话，按重做处理')
         t = P.void_and_reset(t, log)
-    name = session_name(task_id)
     before = set(trajectory.list_sessions(home, str(d)))
     log(f'启动 Claude Code 会话 {name}，观看命令：{attach_command(task_id)}')
     start_session(name, d, 'claude --dangerously-skip-permissions')

@@ -327,8 +327,14 @@ def start_prepare(task_id: int) -> str:
         items = envcheck.toolchain_check(req.get('toolchain') or [], cwd=str(d))
         old_gpu = {i['name']: i for i in (t['env_check'] or []) if i.get('manual')}
         for g in envcheck.gpu_items(req):
-            if old_gpu.get(g['name'], {}).get('ok'):
-                g['ok'] = True
+            old = old_gpu.get(g['name'], {})
+            if old.get('ok'):
+                g['ok'], g['auto_confirmed'] = True, bool(old.get('auto_confirmed'))
+            elif cfg.get('gpu_auto_confirm'):
+                # 配置为自动确认显卡能力：直接记为通过，明细里注明，事后可查
+                g['ok'], g['auto_confirmed'] = True, True
+            if g.get('auto_confirmed'):
+                g['detail'] = f"{g['detail']} 已按配置自动确认".strip()
             items.append(g)
         mats = []
         for m in t['materials'] or []:

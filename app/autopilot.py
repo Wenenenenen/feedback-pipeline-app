@@ -7,6 +7,7 @@
 自动做题的节奏：
 - 准备线（待初始化、待准备环境，以及待做题但 Claude Code 还没开始做的）同时只有 1 道自动题；
 - 前一道题的 prompt 已发出、Claude Code 开始做题后，就取下一道题开始初始化；
+  人工「交给自动」的多道待初始化题同样按 id 排队，一次只开始准备一道；
 - 同时在做题的 Claude Code 会话不超过配置的上限（do_parallel_max）；
 - 验收受 AI 并发上限约束，录屏同时只录 1 道；
 - 准备线空闲、做题数未满且后段（待收集、待验收、待查验、待录屏）积压少于配置的上限时，从题目池按 id 顺序取下一道。
@@ -274,13 +275,25 @@ def preparing(tasks: list[dict]) -> list[dict]:
             (stage(t) in PREP or (stage(t) == P.S_DO and not claude_driver.started(t['id'])))]
 
 
+def on_prep_line(t: dict, busy: set[int]) -> bool:
+    """正占着准备线的题：初始化或准备环境的任务在跑，或待做题但 Claude Code 还没开始做。
+
+    已接管但还没开始准备的待初始化题只是在排队，不算占用；停下的题不占。
+    """
+    if t.get('auto_pause'):
+        return False
+    if t['status'] in PREP:
+        return t['id'] in busy
+    return t['status'] == P.S_DO and not claude_driver.started(t['id'])
+
+
 def backlog(tasks: list[dict]) -> list[dict]:
     """后段没停下的题（停下的题等待处理，不占积压名额）。"""
     return [t for t in tasks if not t.get('auto_pause') and stage(t) in BACK]
 
 
 def advance(t: dict, busy: set[int], slots: dict) -> None:
-    """按题目当前状态启动下一个环节。slots 记录录屏是否占用、在做题的会话数，启动时随之更新。"""
+    """按题目当前状态启动下一个环节。slots 记录录屏是否占用、在做题的会话数、准备线是否占用，启动时随之更新。"""
     if t['id'] in busy or t.get('auto_pause'):
         return
     s = t['status']
@@ -291,7 +304,11 @@ def advance(t: dict, busy: set[int], slots: dict) -> None:
         elif s == P.S_FAIL:
             pause(t, t.get('last_error') or '环节失败')
         elif s == P.S_INIT:
+            # 准备线同时只有 1 道：已有题在准备或等 Claude Code 开始做题时，其余待初始化的题排队
+            if slots['prep']:
+                return
             P.start_prepare(tid)
+            slots['prep'] = True
         elif s == P.S_ENV:
             # 准备已经跑过仍停在这里，说明有需要人工处理的项
             blockers = P.env_blockers(t)
@@ -329,7 +346,8 @@ def tick(pick: bool = True):
     busy = jobs.busy_tasks()
     tasks = auto_tasks()
     slots = {'recording': any(t['status'] == P.S_RECORD and t['id'] in busy for t in tasks),
-             'doing': len(doing(tasks, busy))}
+             'doing': len(doing(tasks, busy)),
+             'prep': any(on_prep_line(t, busy) for t in tasks)}
     for t in tasks:
         advance(t, busy, slots)
     if not pick:
@@ -406,7 +424,8 @@ def status() -> dict:
     with do_loop.lock:
         do = {'state': do_loop.state, 'error': do_loop.error, 'started_at': do_loop.started_at}
     do.update(
-        preparing=[brief(t) for t in preparing(tasks)],
+        # 正占着准备线的题排在前面，页面工具栏显示的就是它，而不是排队等待的题
+        preparing=[brief(t) for t in sorted(preparing(tasks), key=lambda t: not on_prep_line(t, busy))],
         doing=[brief(t) for t in doing(tasks, busy)],
         doing_max=do_cap(),
         backlog=[brief(t) for t in backlog(tasks)],
