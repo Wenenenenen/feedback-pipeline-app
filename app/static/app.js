@@ -153,7 +153,7 @@ async function loadList() {
   $('#task-table tbody').innerHTML = rows.map(t => `
     <tr data-id="${t.id}" class="${t.id === current ? 'sel' : ''}">
       <td><input type="checkbox" class="row-check" value="${t.id}" ${checked.has(t.id) ? 'checked' : ''}></td>
-      <td class="t-seq">${t.seq ? '#' + esc(t.seq) : '—'}</td>
+      <td class="t-seq">${t.seq ? '#' + esc(t.seq) : '—'}${t.client_seq ? `<div class="t-client" title="甲方平台序号">甲方 #${esc(t.client_seq)}</div>` : ''}</td>
       <td><div class="t-branch">${esc(t.branch)}</div><div class="t-sub">${esc(t.subdomain)}</div></td>
       <td>${esc(t.difficulty)}</td>
       <td><div class="chip-stack"><span class="chip ${statusClass(t.status)}">${esc(t.status)}</span>
@@ -185,6 +185,25 @@ try { setListCollapsed(localStorage.getItem('list-collapsed') === '1'); } catch 
 function tsvCell(v) {
   const s = String(v ?? '');
   return /[\t\n\r"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+// 甲方提交标记：已提交显示甲方序号，未提交给出标记按钮；未编号的题不能标记
+function clientMarkHtml(r, seq) {
+  if (r.client_seq) {
+    return `<span class="chip ok" title="已在甲方平台提交 ${esc(r.client_submit_time || '')}">甲方 #${esc(r.client_seq)}</span>
+      <button type="button" class="ghost" data-client-mark="${r.id}" title="修改甲方序号 留空则取消已提交标记">改</button>`;
+  }
+  return seq ? `<span class="chip">甲方未提交</span>
+      <button type="button" data-client-mark="${r.id}" title="在甲方平台提交后点这里填写甲方序号">标记已提交</button>` : '';
+}
+
+// 弹窗填写甲方序号：返回保存后的题目，取消时返回 null
+async function editClientSeq(id, cur) {
+  const s = prompt('甲方平台的序号（留空则取消已提交标记）', cur || '');
+  if (s === null) return null;
+  await api(`/api/tasks/${id}/action/client_submit`, { method: 'POST', body: { client_seq: s } });
+  toast(s.trim() ? '已标记甲方提交' : '已取消甲方提交标记');
+  return api('/api/tasks/' + id);
 }
 
 // 导出 Excel：范围与弹窗一致（勾选的题目，或全部已完成的），文件名取后端给的带时间戳的名字
@@ -221,6 +240,7 @@ async function openSubmission() {
         <span class="seq">${r.cells[0].value ? '#' + esc(r.cells[0].value) : '未编号'}</span>
         <b class="mono">${esc(r.branch)}</b><span class="chip ${statusClass(r.status)}">${esc(r.status)}</span>
         ${reworkChip}
+        <span class="client-mark" data-client-slot="${ri}">${clientMarkHtml(r, r.cells[0].value)}</span>
         <span class="spacer"></span>
         ${nChanged ? `<button type="button" data-changed-copy="${ri}" title="每行一格 列名与新值以制表符分隔">复制改动格</button>` : ''}
         <button type="button" data-row-copy="${ri}">复制整行</button>
@@ -258,6 +278,23 @@ async function openSubmission() {
     const changed = r.rework?.changed || {};
     copyText(r.cells.filter(c => c.name in changed).map(c => `${c.name}\t${tsvCell(c.value)}`).join('\n'));
   });
+  // 甲方提交标记：改完只刷新这一行的标记，不重绘弹窗（保持各行折叠状态）
+  const bindClientMark = slot => slot.querySelectorAll('[data-client-mark]').forEach(b => b.onclick = e => {
+    e.preventDefault();
+    e.stopPropagation();
+    run(async () => {
+      const r = data.rows[+slot.dataset.clientSlot];
+      const t = await editClientSeq(r.id, r.client_seq);
+      if (!t) return;
+      r.client_seq = t.client_seq;
+      r.client_submit_time = t.client_submit_time;
+      slot.innerHTML = clientMarkHtml(r, r.cells[0].value);
+      bindClientMark(slot);
+      loadList();
+      if (current === r.id) showTask(r.id);
+    });
+  });
+  B.querySelectorAll('[data-client-slot]').forEach(bindClientMark);
   $('#sub-expand').onclick = () => B.querySelectorAll('details.sub-row').forEach(d => { d.open = true; });
   $('#sub-collapse').onclick = () => B.querySelectorAll('details.sub-row').forEach(d => { d.open = false; });
   $('#sub-copy-head').onclick = () => copyText(data.columns.join('\t'));
@@ -394,12 +431,20 @@ async function showTask(id) {
   if (S === '待收集') actions.push(btn('开始收集', 'collect', 'primary'), btn('重做', 'redo', 'danger'));
   if (S === '待验收') actions.push(btn('开始验收', 'review', 'primary'));
   if (S === '待查验') actions.push(btn('保存修改', 'save-review'), btn('通过', 'approve', 'primary'), btn('打回重新生成', 'reject', 'danger'));
-  if (S === '待录屏') actions.push(btn('准备录屏环境', 'prepare_record'), btn('标记完成', 'complete', 'primary'));
+  // 录屏环境就绪后按钮改为「重新准备」，避免关掉日志后不知道是否准备过
+  if (S === '待录屏') actions.push(t.record_ready ? btn('重新准备录屏环境', 'prepare_record', 'ghost')
+    : btn('准备录屏环境', 'prepare_record'), btn('标记完成', 'complete', 'primary'));
   if (S === '失败') {
     actions.push(btn('重试', 'retry', 'primary'));
     if (['待做题', '待收集'].includes(t.failed_from)) actions.push(btn('重做', 'redo', 'danger'));
   }
+  // 已编号的题可标记甲方提交（填写甲方序号）
+  if (t.seq) actions.push(btn(t.client_seq ? '改甲方序号' : '标记甲方已提交', 'client_submit'));
   actions.push(btn('删除题目', 'delete', 'danger push'));
+  const recordReady = t.record_ready
+    ? `<span class="chip ok">已就绪</span> <span class="muted">${esc(t.record_ready_time || '')} 产物快照 ${esc((t.artifact_sha || '').slice(0, 8))}</span>`
+    : `<span class="chip ${S === '待录屏' ? 'human' : ''}">未准备</span>${t.record_ready_sha && t.record_ready_sha !== t.artifact_sha
+      ? ' <span class="muted">产物快照已变化 需重新准备</span>' : ''}`;
 
   const mats = (t.materials || []).map(m => `<tr>
       <td><span class="mono">${esc(m.path)}</span><br><span class="muted">${esc(m.purpose)}</span></td>
@@ -428,6 +473,9 @@ async function showTask(id) {
         <h2>${esc(t.branch)}</h2>
         <span class="chip ${statusClass(S)}">${esc(S)}</span>
         ${t.due_flag ? `<span class="chip due">${esc(t.due_flag)}</span>` : ''}${t.busy ? '<span class="chip busy">运行中</span>' : ''}
+        ${t.client_seq ? `<span class="chip ok" title="已在甲方平台提交 ${esc(t.client_submit_time || '')}">甲方 #${esc(t.client_seq)}</span>`
+          : t.seq ? '<span class="chip">甲方未提交</span>' : ''}
+        ${S === '待录屏' && t.record_ready ? '<span class="chip ok">录屏环境已就绪</span>' : ''}
       </div>
       <div class="meta-line">${esc(t.domain)} / ${esc(t.subdomain)} · ${esc(t.difficulty)} · ${esc(t.lang_framework || '技术栈未定')}</div>
       ${stepper(t)}
@@ -504,6 +552,7 @@ async function showTask(id) {
     </div>`, t.delivery_score ? `评分 ${esc(t.delivery_score)}` : '')}
 
     ${panel(t, 'record', '录屏', `<div class="fields">
+      ${field('录屏环境', `<div class="plain">${recordReady}</div>`)}
       ${field('录屏目录', `${codeBlock('cd ' + t.record_dir)}<div class="muted hint">待录屏阶段点「准备录屏环境」后 产物快照会全新克隆到这里 录屏前准备 录屏步骤和收尾的命令都在这个目录下执行</div>`)}
       ${prep.setup ? field('录屏前准备', `${codeBlock(prep.setup)}<div class="muted hint">开录前在录屏目录终端执行 安装依赖并后台启动服务 这部分不录</div>`) : ''}
       ${field('录屏步骤', steps ? `${(t.record_issues || []).length ? issuesHtml(t.record_issues) : ''}<div class="muted hint">从这里开始录 直接在产物页面上操作出问题</div><ol class="steps">${steps}</ol>` : plain(''))}
@@ -580,11 +629,12 @@ async function doAction(t, act, idx) {
     body.text = val('inspect_text') || '';
     if (!body.text.trim()) throw new Error('请粘贴质检原文');
   }
-  if (act === 'collect' || (act === 'retry' && t.failed_from === '待收集')) {
-    // 产物提交信息：feat: 模型产物 - <概述>
-    const s = prompt('产物概述（用于提交信息 feat: 模型产物 - <概述>）', t.branch);
-    if (s === null) return;
-    body.summary = s;
+  // 收集时产物提交信息直接用后端默认的 feat: 模型产物 - <分支名>，不再弹窗询问概述
+  if (act === 'prepare_record' && t.record_ready &&
+      !confirm('录屏环境已准备过，重新准备会删除录屏目录后重新克隆（目录里装的依赖、生成的文件都会清掉），确定？')) return;
+  if (act === 'client_submit') {
+    if (await editClientSeq(id, t.client_seq)) { await loadList(); await showTask(id); }
+    return;
   }
   if (act === 'complete') {
     body.recording_link = val('recording_link');

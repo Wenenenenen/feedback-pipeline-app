@@ -107,6 +107,7 @@ def view(t: dict) -> dict:
     t['do_command'] = f"cd {task_dir(t)} && claude --dangerously-skip-permissions"
     # 录屏目录：「准备录屏环境」会把产物快照全新克隆到这里
     t['record_dir'] = str(config.path_of('record_root') / t['branch'])
+    t['record_ready'] = record_ready(t)
     t['busy'] = t['id'] in jobs.busy_tasks()
     return t
 
@@ -530,13 +531,22 @@ def reject(task_id: int, comment: str) -> str:
     return start_review(task_id)
 
 
+def record_ready(t: dict) -> bool:
+    """录屏环境是否已就绪：准备时的产物快照与当前一致（返修改过产物后需重新准备），且录屏目录还在。"""
+    sha = t.get('record_ready_sha')
+    return bool(sha) and sha == t.get('artifact_sha') and (config.path_of('record_root') / t['branch']).is_dir()
+
+
 def start_prepare_record(task_id: int) -> str:
     t = need(db.get_task(task_id), S_RECORD)
 
     def work(log, run_key, stop):
         cfg = config.load()
         rdir = config.path_of('record_root') / t['branch']
+        # 重新准备时先清掉就绪标记，克隆失败不会留下过期的已就绪状态
+        db.update_task(task_id, record_ready_sha=None, record_ready_time=None)
         gitops.fresh_clone(cfg['github_repo'], t['branch'], t['artifact_sha'], rdir, log=log)
+        db.update_task(task_id, record_ready_sha=t['artifact_sha'], record_ready_time=db.now())
         log(f'录屏目录已就绪 {rdir}')
 
     return jobs.submit('prepare-record', task_id, work)
@@ -557,6 +567,21 @@ def complete(task_id: int, recording_link: str) -> dict:
     if insp:
         db.update_inspection(insp['id'], state=I_DONE, resolved_time=db.now())
     return db.update_task(task_id, **fields)
+
+
+def mark_client_submit(task_id: int, client_seq: str) -> dict:
+    """标记已在甲方平台提交并记下甲方序号；序号留空即取消标记。"""
+    t = need(db.get_task(task_id))
+    if not t.get('seq'):
+        raise ActionError('标记完成分配序号后才能标记甲方提交')
+    client_seq = (client_seq or '').strip().lstrip('#').strip()
+    if not client_seq:
+        return db.update_task(task_id, client_seq=None, client_submit_time=None)
+    if len(client_seq) > 64:
+        raise ActionError('甲方序号过长')
+    # 改序号时保留首次标记的时间
+    return db.update_task(task_id, client_seq=client_seq,
+                          client_submit_time=t.get('client_submit_time') or db.now())
 
 
 # ---------- 质检登记与返修 ----------

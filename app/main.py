@@ -82,7 +82,7 @@ def list_tasks(status: str | None = None):
         v = P.view(t)
         out.append({k: v.get(k) for k in (
             'id', 'seq', 'branch', 'domain', 'subdomain', 'difficulty', 'status', 'failed_from',
-            'done_time', 'due_flag', 'update_time', 'busy', 'last_error')})
+            'done_time', 'due_flag', 'update_time', 'busy', 'last_error', 'client_seq')})
     return out
 
 
@@ -148,6 +148,8 @@ ACTIONS = {
     'retry': lambda i, b: P.retry(i, b.get('summary', '')),
     # 返修：粘贴质检原文，AI 直接处理
     'rework': lambda i, b: P.start_rework_from_text(i, b.get('text', '')),
+    # 标记已在甲方平台提交，记下甲方序号（留空取消）
+    'client_submit': lambda i, b: P.mark_client_submit(i, b.get('client_seq', '')),
 }
 
 
@@ -238,6 +240,7 @@ def submission_rows(body: dict = Body(default={})):
             rework = {'round': last['round'], 'state': last['state'],
                       'changed': {c['column']: c['before'] for c in P.rework_changes(t, last)}}
         rows.append({'id': t['id'], 'branch': t['branch'], 'status': t['status'],
+                     'client_seq': t['client_seq'], 'client_submit_time': t['client_submit_time'],
                      'rework': rework, 'cells': submission.row(t)})
     return {'columns': submission.COLUMNS, 'rows': rows}
 

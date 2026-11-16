@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS qa_task (
     feedback            TEXT,                               -- Feedback 文本
     record_steps        TEXT,                               -- 录屏步骤（JSON 数组）
     record_prep         TEXT,                               -- 录屏前准备与录完收尾的命令，不录（JSON 对象 setup cleanup）
+    record_ready_sha    VARCHAR(40),                        -- 录屏环境已准备的产物快照 SHA（与当前产物快照一致才算就绪）
+    record_ready_time   TIMESTAMP,                          -- 录屏环境准备完成时间
+    client_seq          VARCHAR(64),                        -- 甲方平台的序号（为空表示尚未在甲方平台提交）
+    client_submit_time  TIMESTAMP,                          -- 标记已在甲方平台提交的时间
     review_self_check   TEXT,                               -- 验收自检结果（JSON）
     review_comment      TEXT,                               -- 打回意见
     remark              TEXT,                               -- 备注

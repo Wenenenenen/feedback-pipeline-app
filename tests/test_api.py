@@ -749,3 +749,43 @@ def test_migrate_fresh_and_existing(data_dir):
     db.migrate(c)
     assert 'summary' in {r[1] for r in c.execute('PRAGMA table_info(qa_inspection)')}
     c.close()
+
+
+def test_prepare_record_marks_ready(client, tmp_path, monkeypatch):
+    """准备录屏环境成功后记下就绪标记；产物快照变化或录屏目录被删后视为未就绪。"""
+    from app import gitops
+    client.put('/api/config', json={'record_root': str(tmp_path / 'record')})
+    monkeypatch.setattr(gitops, 'fresh_clone', lambda repo, br, sha, d, log=None: Path(d).mkdir(parents=True))
+    tid = new_task(status=pipeline.S_RECORD, artifact_sha='b' * 40)
+    assert client.get(f'/api/tasks/{tid}').json()['record_ready'] is False
+    key = client.post(f'/api/tasks/{tid}/action/prepare_record', json={}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    d = client.get(f'/api/tasks/{tid}').json()
+    assert d['record_ready'] is True and d['record_ready_sha'] == 'b' * 40 and d['record_ready_time']
+    # 返修推送了新的产物快照，需要重新准备
+    db.update_task(tid, artifact_sha='c' * 40)
+    assert client.get(f'/api/tasks/{tid}').json()['record_ready'] is False
+    db.update_task(tid, artifact_sha='b' * 40)
+    (tmp_path / 'record' / 'demo').rmdir()
+    assert client.get(f'/api/tasks/{tid}').json()['record_ready'] is False
+
+
+def test_client_submit_mark(client):
+    """已编号的题可标记甲方提交并填写甲方序号，列表与提交表都带上；留空取消。"""
+    tid = new_task(status=pipeline.S_DONE, seq=11)
+    other = new_task(branch='no-seq', status=pipeline.S_RECORD)
+    r = client.post(f'/api/tasks/{other}/action/client_submit', json={'client_seq': '88'})
+    assert r.status_code == 400 and '序号' in r.json()['detail']
+    assert client.post(f'/api/tasks/{tid}/action/client_submit', json={'client_seq': ' #1234 '}).status_code == 200
+    t = db.get_task(tid)
+    assert t['client_seq'] == '1234' and t['client_submit_time']
+    first = t['client_submit_time']
+    row = client.post('/api/submission', json={}).json()['rows'][0]
+    assert row['client_seq'] == '1234' and row['client_submit_time'] == first
+    assert {x['id']: x['client_seq'] for x in client.get('/api/tasks').json()}[tid] == '1234'
+    # 改序号保留首次标记时间，留空即取消
+    client.post(f'/api/tasks/{tid}/action/client_submit', json={'client_seq': '1235'})
+    assert db.get_task(tid)['client_seq'] == '1235' and db.get_task(tid)['client_submit_time'] == first
+    client.post(f'/api/tasks/{tid}/action/client_submit', json={'client_seq': ''})
+    t = db.get_task(tid)
+    assert t['client_seq'] is None and t['client_submit_time'] is None
