@@ -33,9 +33,11 @@ SNAPSHOT_FIELDS = ('feedback', 'delivery_score', 'score_reason', 'remark', 'repr
 
 # 出题只限定在「游戏、图形与多媒体」这一主领域，作业文档中的其他领域不再出题
 DOMAINS = {
-    '游戏、图形与多媒体': ['音视频处理', '图形渲染', '其他'],
+    '游戏、图形与多媒体': ['音视频处理', '图形渲染', '游戏开发', '图像处理', '其他'],
 }
-OS_LINUX = 'MacOS/Linux'
+# 提交表的 Harness 与操作系统固定取值
+HARNESS = 'Claude Code CLI'
+OS_LINUX = 'Linux'
 # 环境可复现等级只能取这三档，与 qa-review schema 的枚举保持一致
 REPRO_LEVELS = ['无外部依赖', '有外部依赖，未容器化', '已容器化，可一键起环境']
 
@@ -271,7 +273,7 @@ def start_gen(params: dict) -> str:
                 'lang_framework': submission.normalize_lang(it['lang_framework']),
                 'acceptance_points': it['acceptance_points'], 'materials': mats,
                 'env_requirements': it['env_requirements'], 'remark': it['remark'],
-                'similarity_note': it['similarity_note'], 'harness': 'Claude Code', 'os': OS_LINUX,
+                'similarity_note': it['similarity_note'], 'harness': HARNESS, 'os': OS_LINUX,
                 'voided_sessions': [],
             })
             if seqs:
@@ -378,6 +380,10 @@ _MATERIAL_HINT = {
 }
 
 
+# 准备环境还没跑到检查这一步（如中途被打断）时的待处理项文字，自动流程据此判断可以直接接着准备
+ENV_UNCHECKED = '尚未执行环境检查'
+
+
 def env_blockers(t: dict) -> list[str]:
     """需要人工处理的项，每项带上处理方式。"""
     out = []
@@ -386,7 +392,7 @@ def env_blockers(t: dict) -> list[str]:
         if st not in ('ready', 'confirmed'):
             out.append(f"素材 {m['path']} {_MATERIAL_HINT.get(st, st)} {m.get('note', '')}".strip())
     if t['env_check'] is None or t['client_check'] is None:
-        out.append('尚未执行环境检查')
+        out.append(ENV_UNCHECKED)
     for i in (t['env_check'] or []) + (t['net_check'] or []):
         if not i['ok']:
             label = '需要人工确认' if i.get('manual') else '不通过'
@@ -441,6 +447,19 @@ def _local_time(ts: str | None) -> str | None:
     return t.astimezone().strftime('%Y-%m-%d %H:%M:%S')
 
 
+def interrupt_remark(info: dict, continue_count: int) -> str:
+    """有「继续」时追加到备注草稿的中断说明：区分接口报错中断（带状态码）与无报错停止。"""
+    if not continue_count:
+        return ''
+    errs = info.get('api_errors') or []
+    if errs:
+        codes = sorted({m.group(1) for e in errs if (m := re.search(r'\b([45]\d\d)\b', e))})
+        cause = f"模型中途因接口报错{' '.join(codes)}中断{len(errs)}次" if codes else f'模型中途因接口报错中断{len(errs)}次'
+    else:
+        cause = '模型中途无报错停止'
+    return f' {cause} 人工输入继续{continue_count}次后完成 prompt与promptid取第一轮'
+
+
 def start_collect(task_id: int, summary: str = '') -> str:
     t = need(db.get_task(task_id), S_COLLECT)
 
@@ -464,14 +483,11 @@ def start_collect(task_id: int, summary: str = '') -> str:
         shutil.copy2(path, copy)
         log(f'轨迹已留存 {config.unc(copy)}')
         traj_summary = trajectory.summarize(path)
-        remark = t['remark'] or ''
-        if v['continue_count']:
-            remark = (remark + f" 模型中途无报错停止 人工输入继续{v['continue_count']}次后完成 "
-                      'prompt与promptid取第一轮').strip()
+        remark = ((t['remark'] or '') + interrupt_remark(info, v['continue_count'])).strip()
         models = info['requested_models'] or info['models']
         db.update_task(
             task_id, session_id=info['session_id'], prompt_id=info['prompts'][0]['prompt_id'],
-            harness='Claude Code', harness_version=info['version'], os=OS_LINUX,
+            harness=HARNESS, harness_version=info['version'], os=OS_LINUX,
             model_name=', '.join(models), continue_count=v['continue_count'],
             done_time=_local_time(info['last_timestamp']), trajectory_path=str(copy),
             traj_summary=traj_summary, artifact_sha=art['sha'], remark=remark,

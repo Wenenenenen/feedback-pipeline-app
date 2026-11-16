@@ -69,6 +69,81 @@ def test_turn_state(tmp_path):
     assert trajectory.turn_state(p) == 'asking'
 
 
+def test_parse_api_errors_and_forbidden_calls(tmp_path):
+    """接口报错单独记录、不计入模型与最终回复；违规调用逐项列出。"""
+    p = tmp_path / 's.jsonl'
+    sub = [{'type': 'tool_use', 'id': 'a1', 'name': 'Agent', 'input': {}},
+           {'type': 'tool_use', 'id': 'm1', 'name': 'mcp__x__y', 'input': {}}]
+    write_jsonl(p, [_user('做个东西'), _assistant(sub),
+                    _assistant([{'type': 'text', 'text': 'API Error: bad response status code 504'}],
+                               'stop_sequence', isApiErrorMessage=True)])
+    info = trajectory.parse(p)
+    assert info['api_errors'] == ['API Error: bad response status code 504']
+    assert 'API Error' not in info['final_text']
+    bad = trajectory.forbidden_calls(info, [])
+    assert any('MCP' in b for b in bad) and any('子代理' in b for b in bad)
+
+
+def test_interrupt_remark():
+    assert P.interrupt_remark({'api_errors': []}, 0) == ''
+    r = P.interrupt_remark({'api_errors': ['API Error: bad response status code 504',
+                                           'API Error: 529 overloaded']}, 2)
+    assert '接口报错504 529中断2次' in r and '继续2次' in r and 'promptid取第一轮' in r
+    assert '无报错停止' in P.interrupt_remark({'api_errors': []}, 1)
+
+
+@pytest.fixture()
+def fake_session(monkeypatch, tmp_path):
+    """wait_done 用：轨迹进度按给定序列返回，屏幕空闲，等待不真睡。"""
+    p = tmp_path / 's.jsonl'
+    write_jsonl(p, [_user('做个东西')])
+    sent = []
+    monkeypatch.setattr(claude_driver, 'alive', lambda name: True)
+    monkeypatch.setattr(claude_driver, 'capture', lambda name: '')
+    monkeypatch.setattr(claude_driver, '_sleep', lambda sec, stop: None)
+    monkeypatch.setattr(claude_driver, 'send_continue', lambda name, path, log, stop: sent.append(name))
+    monkeypatch.setattr(claude_driver.time, 'sleep', lambda s: None)
+
+    def states(seq):
+        it = iter(seq)
+        monkeypatch.setattr(trajectory, 'turn_state', lambda path: next(it))
+    return p, sent, states
+
+
+def _cfg(**kw):
+    from app import config
+    return {**config.DEFAULTS, 'do_idle_sec': 0, **kw}
+
+
+def test_wait_done_auto_continue_on_api_error(fake_session):
+    p, sent, states = fake_session
+    # 报错一次后自动「继续」，再正常做完
+    states(['api_error', 'running', 'done'])
+    claude_driver.wait_done('s', p, _cfg(do_auto_continue_max=3), lambda m: None, threading.Event())
+    assert sent == ['s']
+    # 超过次数上限判失败，原因里带上已继续的次数
+    sent.clear()
+    states(['api_error', 'running', 'api_error'])
+    with pytest.raises(claude_driver.DriverError, match='已自动输入「继续」1 次'):
+        claude_driver.wait_done('s', p, _cfg(do_auto_continue_max=1), lambda m: None, threading.Event())
+    assert sent == ['s']
+    # 设为 0 时不自动继续，直接判失败
+    sent.clear()
+    states(['api_error'])
+    with pytest.raises(claude_driver.DriverError, match='接口报错中断'):
+        claude_driver.wait_done('s', p, _cfg(do_auto_continue_max=0), lambda m: None, threading.Event())
+    assert sent == []
+
+
+def test_wait_done_stops_on_forbidden_call(fake_session):
+    p, sent, states = fake_session
+    write_jsonl(p, [_user('做个东西'), _assistant([{'type': 'tool_use', 'id': 'a1', 'name': 'Agent', 'input': {}}])])
+    states(['running'] * 5)
+    with pytest.raises(claude_driver.DriverError, match='不允许的调用'):
+        claude_driver.wait_done('s', p, _cfg(), lambda m: None, threading.Event())
+    assert '重试' in autopilot.hints_for(P.S_DO, '做题中出现不允许的调用')[0]
+
+
 def test_pick_option():
     screen = (' Quick safety check: Is this a project you created or one you trust?\n'
               ' ❯ No, exit\n   Yes, I trust this folder\n Enter to confirm · Esc to cancel')
@@ -374,6 +449,38 @@ def test_tick_pauses_on_failure_and_env_blockers(data_dir, fake_steps):
     assert p['step'] == P.S_ENV and 'a.png' in p['reason']
 
 
+def test_tick_resumes_interrupted_prepare(data_dir, fake_steps):
+    """待准备环境但没有待处理项（准备中途被打断）：接着准备，不停下。"""
+    never = new_task(status=P.S_ENV, auto_run=1)  # 还没跑到环境检查
+    autopilot.tick()
+    assert ('start_prepare', never) in fake_steps and not db.get_task(never)['auto_pause']
+    autopilot.release(never)
+    fake_steps.clear()
+    done = new_task(status=P.S_ENV, auto_run=1, materials=[], env_check=[], net_check=[],
+                    client_check={'items': []})
+    autopilot.tick()
+    assert fake_steps == [('start_prepare', done)] and not db.get_task(done)['auto_pause']
+
+
+def test_do_loop_clears_error_after_successful_tick(data_dir, fast_loop, monkeypatch):
+    calls = {'n': 0}
+    real_tick = autopilot.tick
+
+    def flaky(pick=True):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            raise RuntimeError('偶发错误')
+        return real_tick(pick)
+
+    monkeypatch.setattr(autopilot, 'tick', flaky)
+    loop = autopilot.DoLoop()
+    loop.start()
+    assert wait(lambda: calls['n'] >= 3)
+    assert loop.error == ''
+    loop.stop()
+    assert wait(lambda: loop.state == 'idle')
+
+
 def test_tick_auto_check(data_dir, fake_steps):
     good = dict(delivery_score=3, reproducibility=P.REPRO_LEVELS[0], feedback='', score_reason='x',
                 record_steps=[{'action': '打开页面点渲染', 'command': '', 'expect': '画面全黑'}],
@@ -533,6 +640,23 @@ def test_migrate_adds_auto_columns(data_dir):
     db.migrate(c)
     assert {'auto_run', 'auto_pause', 'record_script'} <= {r[1] for r in c.execute('PRAGMA table_info(qa_task)')}
     c.close()
+
+
+def test_migrate_updates_harness_and_os(data_dir):
+    """存量库补执行 008：旧的 Harness 与操作系统取值改为新取值，其他取值不动。"""
+    import sqlite3
+    old = new_task(harness='Claude Code', os='MacOS/Linux')
+    other = new_task(harness='Codex CLI', os='Windows')
+    c = db.conn()
+    c.execute("DELETE FROM schema_version WHERE script = '008_harness_os.sql'")
+    c.commit()
+    db.reset_for_test()
+    c = sqlite3.connect(db.db_path())
+    db.migrate(c)
+    c.close()
+    t, o = db.get_task(old), db.get_task(other)
+    assert (t['harness'], t['os']) == ('Claude Code CLI', 'Linux')
+    assert (o['harness'], o['os']) == ('Codex CLI', 'Windows')
 
 
 def test_harness_file_exists():

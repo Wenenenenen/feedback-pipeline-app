@@ -3,6 +3,7 @@
 
 与人工做题保持一致：做题目录下以 bypass 模式启动全新会话，首条输入就是 prompt 原文，只发送一次；
 结束时直接关闭会话，不再输入任何内容（避免轨迹里多出人工输入导致收集校验不过）。
+唯一的例外是接口报错中断：按配置自动输入「继续」，与人工处理中断的做法一致。
 做题过程可以用 attach_command() 给出的命令只读观看。
 """
 import os
@@ -182,17 +183,76 @@ def _last_error_text(path: Path) -> str:
     return ''
 
 
+CONTINUE_TEXT = '继续'
+# 做题中途检查违规调用（子代理、MCP、非内置 skill）的间隔秒数
+FORBIDDEN_CHECK_SEC = 60
+
+
+def _sleep(sec: float, stop) -> None:
+    """可被人工停止打断的等待。"""
+    if stop.wait(sec):
+        raise DriverError('人工停止')
+
+
+def send_continue(name: str, path: Path, log, stop, timeout: int = 90) -> None:
+    """接口报错中断后输入「继续」：等界面空闲再发送，确认轨迹里出现这条人工输入。"""
+    before = len(trajectory.human_prompts(trajectory.load_rows(path)))
+    # 报错后界面回到输入状态需要一点时间，忙碌标记消失再输入
+    for _ in range(30):
+        if not alive(name):
+            raise DriverError('Claude Code 会话意外退出，无法输入「继续」')
+        if BUSY_MARK not in capture(name).lower():
+            break
+        _sleep(2, stop)
+    paste_and_submit(name, CONTINUE_TEXT)
+    deadline = time.time() + timeout
+    nudged = False
+    start = time.time()
+    while time.time() < deadline:
+        _sleep(2, stop)
+        if len(trajectory.human_prompts(trajectory.load_rows(path))) > before:
+            return
+        if not nudged and time.time() - start > 30:
+            log('30 秒内轨迹里没有出现「继续」，补按一次回车')
+            tmux('send-keys', '-t', name, 'Enter')
+            nudged = True
+    raise DriverError(f'输入「继续」后 {timeout} 秒内轨迹里没有出现这条输入，屏幕：\n{capture(name)[-1500:]}')
+
+
 def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
-    """轮询轨迹与屏幕，直到这一轮正常结束；接口报错、模型提问、超时都抛错。"""
+    """轮询轨迹与屏幕，直到这一轮正常结束。
+
+    接口报错中断时按配置等待后自动输入「继续」（作业规则允许，提交时取第一轮的 prompt 与 promptid），
+    超过次数上限才判失败；中途出现违规调用（子代理、MCP、非内置 skill）立即判失败，不再空等到做完；
+    模型提问、超时都抛错。
+    """
     deadline = time.time() + int(cfg['do_timeout_min']) * 60
     idle = int(cfg['do_idle_sec'])
+    max_continue = int(cfg.get('do_auto_continue_max') or 0)
+    continue_wait = int(cfg.get('do_continue_wait_sec') or 0)
+    continued = 0
     last_report = time.time()
+    last_check = 0.0
     while True:
         if stop.is_set():
             raise DriverError('人工停止')
+        if time.time() - last_check >= FORBIDDEN_CHECK_SEC:
+            last_check = time.time()
+            bad = trajectory.forbidden_calls(trajectory.parse(path), cfg['builtin_skills'])
+            if bad:
+                raise DriverError('做题中出现不允许的调用，轨迹不能提交：' + '；'.join(bad))
         state = trajectory.turn_state(path)
         if state == 'api_error':
-            raise DriverError('Claude Code 接口报错中断：' + (_last_error_text(path) or '见做题会话'))
+            err = _last_error_text(path) or '见做题会话'
+            if continued >= max_continue:
+                extra = f'（已自动输入「继续」{continued} 次）' if continued else ''
+                raise DriverError(f'Claude Code 接口报错中断{extra}：{err}')
+            continued += 1
+            log(f'接口报错中断：{err}；{continue_wait} 秒后输入「继续」（第 {continued}/{max_continue} 次）')
+            _sleep(continue_wait, stop)
+            send_continue(name, path, log, stop)
+            log('已输入「继续」，接着等待做完')
+            continue
         if state == 'asking':
             raise DriverError('模型在向人提问（等待回答），按做题规则需要重做')
         if state == 'done':

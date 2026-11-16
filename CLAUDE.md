@@ -11,7 +11,7 @@
 
 ## 约定
 
-- 做题用 WSL 的 Claude Code（干净环境）：手动模式由人启动；自动做题由 `claude_driver` 在独立 tmux 服务器（`tmux -L feedback`）里启动交互式会话并粘贴 prompt 原文，结束时直接关会话、不再输入任何内容，不改 `~/.claude`；出题与验收用 Windows 的 Codex（默认 ChatGPT 登录，与 Codex 客户端共用，不要动 `~/.codex/auth.json`；CC Switch 或第三方 API 的环境在配置页勾选「沿用 config.toml 的供应商与模型」，由 `codex_runner.model_args` 只读取 config.toml 的模型与供应商转成 `-m`、`-c`，`--ignore-user-config` 保留）。
+- 做题用 WSL 的 Claude Code（干净环境）：手动模式由人启动；自动做题由 `claude_driver` 在独立 tmux 服务器（`tmux -L feedback`）里启动交互式会话并粘贴 prompt 原文，结束时直接关会话、不再输入任何内容（唯一例外是接口报错中断时按配置自动输入「继续」），不改 `~/.claude`；出题与验收用 Windows 的 Codex（默认 ChatGPT 登录，与 Codex 客户端共用，不要动 `~/.codex/auth.json`；CC Switch 或第三方 API 的环境在配置页勾选「沿用 config.toml 的供应商与模型」，由 `codex_runner.model_args` 只读取 config.toml 的模型与供应商转成 `-m`、`-c`，`--ignore-user-config` 保留）。
 - 代码常量与 schema 枚举必须一致：`pipeline.DOMAINS` 对应 `agent/schemas/qa-gen.json` 的子方向，`pipeline.REPRO_LEVELS` 对应 `agent/schemas/qa-review.json` 与 `qa-rework.json` 的可复现等级，测试会核对。
 - Feedback 写法规则在 `agent/style.md`，后端规则检查在 `app/style_check.py`，两边一起改。
 - 仓库根目录不要放 `AGENTS.md`：Codex 会从仓库根一路加载到 `agent/`。

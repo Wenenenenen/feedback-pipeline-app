@@ -48,7 +48,9 @@ REASON_HINTS = [
     ('连续重连', '检查网络或代理，确认 codex 能连上供应商后点「重试」'),
     ('轨迹校验不通过', '这次做题的轨迹不能提交：点「重做」作废会话重新做题，自动流程会接着做'),
     ('首条输入', '点「重试」会作废这次会话并重新做题'),
+    ('已自动输入「继续」', '接口持续报错，自动「继续」也没能恢复：确认 Claude Code 的接入服务恢复后点「重试」，会作废这次会话重新做题'),
     ('接口报错', '检查 WSL 中 Claude Code 的接入配置（用 attach 命令或手动开一个 claude 看报错），处理后点「重试」，会作废这次会话重新做题'),
+    ('不允许的调用', '模型调用了子代理、MCP 或非内置 skill，这次会话不能提交：点「重试」作废会话重新做题；反复出现时检查 ~/.claude 是否干净'),
     ('向人提问', '模型中途向人提问，按做题规则这次会话作废：点「重试」重新做题'),
     ('没有进入可输入状态', '在 WSL 终端手动执行一次做题命令，看 Claude Code 卡在什么提示（登录、更新、首次使用说明等），处理掉后点「重试」'),
     ('启动后立即退出', '在 WSL 终端手动执行一次做题命令看报错，处理后点「重试」'),
@@ -234,6 +236,9 @@ class DoLoop:
                         break
                 else:
                     tick(pick=mode == 'running')
+                    # 推进成功后清掉上次的调度出错提示，避免一次偶发错误一直挂在工具栏
+                    with self.lock:
+                        self.error = ''
                     # 做完当前题后停止：已接管的题都完成（已释放）或停下，且没有在跑的任务时关闭
                     if mode == 'finishing' and not unfinished() and not auto_busy():
                         break
@@ -310,9 +315,14 @@ def advance(t: dict, busy: set[int], slots: dict) -> None:
             P.start_prepare(tid)
             slots['prep'] = True
         elif s == P.S_ENV:
-            # 准备已经跑过仍停在这里，说明有需要人工处理的项
-            blockers = P.env_blockers(t)
-            pause(t, '准备环境有需要人工处理的项：\n' + '\n'.join(blockers or ['见环境检查']))
+            # 准备跑完仍停在这里，说明有需要人工处理的项；没有待处理项（或还没检查过）说明准备中途被打断
+            # （如后端重启），直接接着准备
+            blockers = [b for b in P.env_blockers(t) if b != P.ENV_UNCHECKED]
+            if blockers:
+                pause(t, '准备环境有需要人工处理的项：\n' + '\n'.join(blockers))
+            else:
+                P.start_prepare(tid)
+                slots['prep'] = True
         elif s == P.S_DO:
             # 同时做题的会话已满时先等着（如人工重试让多道题同时回到待做题）
             if slots['doing'] >= do_cap():

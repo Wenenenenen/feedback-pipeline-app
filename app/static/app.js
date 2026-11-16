@@ -922,6 +922,8 @@ const CONFIG_FIELDS = [
   ['do_ready_timeout_sec', '等待 Claude Code 就绪（秒）', 'number'],
   ['do_timeout_min', '单题做题超时（分钟）', 'number'],
   ['do_idle_sec', '做完判定的静止时长（秒，轨迹记录本轮结束后再静止这么久才算做完）', 'number'],
+  ['do_auto_continue_max', '接口报错自动继续次数（做题时遇到 504 529 等接口报错中断 自动输入「继续」的次数上限 0 表示不自动继续 直接停下）', 'number'],
+  ['do_continue_wait_sec', '接口报错后等待（秒，等这么久再输入「继续」）', 'number'],
   ['record_max_sec', '自动录屏时长上限（秒）', 'number'],
   ['record_audio', '自动录屏录制声音（需要 WSL 中安装 pulseaudio）', 'checkbox'],
 ];

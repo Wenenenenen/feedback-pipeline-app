@@ -70,6 +70,8 @@ def parse(path: Path) -> dict:
         'efforts': collections.Counter(), 'tools': collections.Counter(), 'skills': [],
         # Skill 工具调用的 skill 名，按调用顺序记录，缺参数时记为空串
         'skill_calls': [],
+        # 主链上的接口报错文本（如 API Error: bad response status code 504），按出现顺序
+        'api_errors': [],
         'prompts': human_prompts(rows), 'final_text': '', 'last_timestamp': None,
     }
     for r in rows:
@@ -86,6 +88,10 @@ def parse(path: Path) -> dict:
                 info['skills'] = list(a['names'])
         if r.get('type') == 'assistant' and not r.get('isSidechain'):
             m = r.get('message') or {}
+            if r.get('isApiErrorMessage'):
+                texts = [x.get('text', '') for x in m.get('content') or [] if isinstance(x, dict)]
+                info['api_errors'].append(' '.join(t for t in texts if t)[:300])
+                continue
             if m.get('model'):
                 info['models'][m['model']] += 1
             if r.get('requestedModel'):
@@ -179,6 +185,24 @@ def turn_state(path: Path) -> str:
     return 'running'
 
 
+def forbidden_calls(info: dict, builtin_skills: list[str]) -> list[str]:
+    """做题规则不允许的调用：非内置 skill、MCP、子代理。收集校验与自动做题中途检查共用。"""
+    out = []
+    tools = info['tools']
+    # 模型主动调用 Claude Code 内置 skill 属于正常行为，只拦截调用非内置 skill
+    bad_calls = [s for s in info.get('skill_calls', []) if s not in builtin_skills]
+    if bad_calls:
+        names = ', '.join(sorted({s or '（未知）' for s in bad_calls}))
+        out.append(f'轨迹中调用非内置 skill {len(bad_calls)} 次：{names}')
+    mcp = sum(v for k, v in tools.items() if k and k.startswith('mcp__'))
+    if mcp:
+        out.append(f'轨迹中有 MCP 调用 {mcp} 次')
+    sub = sum(tools.get(k, 0) for k in SUBAGENT_TOOLS)
+    if sub:
+        out.append(f'轨迹中有子代理调用 {sub} 次')
+    return out
+
+
 def validate(info: dict, prompt: str, expected_model: str | None,
              builtin_skills: list[str]) -> dict:
     """返回 {'errors': [...], 'continue_count': n}。"""
@@ -193,18 +217,7 @@ def validate(info: dict, prompt: str, expected_model: str | None,
         bad = [p for p in extra if _norm(p['text']).lower() not in CONTINUE_WORDS]
         if bad:
             errors.append(f'存在追问或纠错输入 {len(bad)} 条：' + _norm(bad[0]['text'])[:60])
-    tools = info['tools']
-    # 模型主动调用 Claude Code 内置 skill 属于正常行为，只拦截调用非内置 skill
-    bad_calls = [s for s in info.get('skill_calls', []) if s not in builtin_skills]
-    if bad_calls:
-        names = ', '.join(sorted({s or '（未知）' for s in bad_calls}))
-        errors.append(f'轨迹中调用非内置 skill {len(bad_calls)} 次：{names}')
-    mcp = sum(v for k, v in tools.items() if k and k.startswith('mcp__'))
-    if mcp:
-        errors.append(f'轨迹中有 MCP 调用 {mcp} 次')
-    sub = sum(tools.get(k, 0) for k in SUBAGENT_TOOLS)
-    if sub:
-        errors.append(f'轨迹中有子代理调用 {sub} 次')
+    errors += forbidden_calls(info, builtin_skills)
     extra_skills = sorted(set(info['skills']) - set(builtin_skills))
     if extra_skills:
         errors.append('skill 列表含非内置 skill：' + ', '.join(extra_skills))

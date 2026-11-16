@@ -9,7 +9,7 @@
           "branch": { "type": "string" },
           "user_prompt": { "type": "string" },
           "domain": { "type": "string", "enum": ["游戏、图形与多媒体"] },
-          "subdomain": { "type": "string", "enum": ["音视频处理", "图形渲染", "其他"] },
+          "subdomain": { "type": "string", "enum": ["音视频处理", "图形渲染", "游戏开发", "图像处理", "其他"] },
           "task_type": { "type": "string", "enum": ["功能开发"] },
           "difficulty": { "type": "string", "enum": ["困难", "地狱"] },
           "lang_framework": { "type": "string" },

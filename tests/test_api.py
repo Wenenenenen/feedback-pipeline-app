@@ -280,7 +280,8 @@ def test_gen_flow_with_fake_codex(client, monkeypatch):
         time.sleep(0.1)
     assert db.get_run(key)['status'] == 'success'
     t = db.find_task_by_branch('live-relay')
-    assert t and t['status'] == pipeline.S_INIT and t['os'] == 'MacOS/Linux' and t['client_seq'] == '12100'
+    assert t and t['status'] == pipeline.S_INIT and t['os'] == 'Linux' and t['client_seq'] == '12100'
+    assert t['harness'] == 'Claude Code CLI'
 
 
 def test_build_cmd():
