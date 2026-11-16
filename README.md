@@ -51,7 +51,7 @@ bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/setup-verify-tools.s
 - **GitHub 仓库**：存放做题快照的产物仓库 ssh 地址；
 - **WSL 发行版名**：与 `wsl -l` 中的名称一致；
 - **录屏文件目录**：录屏软件输出目录的 WSL 路径（如 `/mnt/e/GSB-Recordings`）；
-- **待上传文件目录**：收集留存的轨迹与自动录屏放在一起的目录（WSL 路径，默认 `/mnt/e/feedback-upload`），文件名为「甲方序号-分支名」，改甲方序号时随之改名；
+- **待上传文件目录**：收集留存的轨迹与自动录屏放在一起的目录（WSL 路径，默认 `/mnt/e/WorkSpace/jianzhi/feedback-upload`，即 `E:\WorkSpace\jianzhi\feedback-upload`），文件名为「甲方序号-分支名」，改甲方序号时随之改名；
 - **沿用 config.toml 的供应商与模型**：codex 用 CC Switch 或手工配置的第三方 API 时勾选。流水线调用 codex 时带 `--ignore-user-config`，不加载 `config.toml`；勾选后每次运行前只读取 Windows `config.toml` 中的 `model`、`model_provider` 和对应的 `[model_providers.<名称>]` 一节，转成 `-m`、`-c` 参数传给 codex，MCP、插件等仍不加载。CC Switch 切换供应商后流水线自动跟随，不用改配置；API key 由 CC Switch 写在 `auth.json`，流水线不读也不改。`config.toml` 没有 `model` 时用配置页的模型名；推理强度始终用配置页的值；
 - **config.toml 路径**：一般留空，自动按 Windows 的 `CODEX_HOME` 或 `%USERPROFILE%\.codex\config.toml` 定位；定位不到时填它的 WSL 路径（如 `/mnt/c/Users/<用户名>/.codex/config.toml`）；
 - 模型名、推理强度、并发数、超时、连续重连上限、端口段、各目录根一般保持默认。
@@ -105,7 +105,7 @@ bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/start.sh
 ## 全自动
 
 - **补充题目池**（暂停使用：自动出题还不能分配甲方序号，点按钮只提示暂停，请用手动批量出题）：「批量出题」页顶部点「补充题目池」，后台一轮接一轮出题（每轮 10 题，子方向与难度由 AI 判断，偏好与补充要求为空），出完的题进入题目池（待初始化）。再点一次，等当前这轮出完就停；某轮出错即停，卡片里能打开出错日志。
-- **开始做题**：题目页工具栏点「开始做题」，从题目池按顺序取题，自动走：初始化并准备环境 → 在后台 tmux 里启动 WSL 的 Claude Code、粘贴 prompt 原文并等它做完 → 收集 → 验收 → 按规则查验 → 在 WSL 虚拟屏上后台录屏（`qa-record` 生成录屏脚本并试跑，Windows 样式指针真实移动点击 chromium 里的产物页面，Windows Terminal 配色的 xterm 里执行命令，ffmpeg 录 720p 带声音的 mp4）→ 标记完成。做题线同时 1 道，验收和录屏可以与下一道的做题重叠。运行中有两种关闭方式：「做完当前题后停止」不再取新题，已接管的题继续走完所有环节，全部完成或停下后自动关闭（只想跑一道题时，开始后马上点它即可）；「停止做题」不再取新题，也不再启动下一环节，在跑的环节跑完就关闭，题目停在当前状态，下次开始接着走。
+- **开始做题**：题目页工具栏点「开始做题」，从题目池按顺序取题，自动走：初始化并准备环境 → 在后台 tmux 里启动 WSL 的 Claude Code、粘贴 prompt 原文并等它做完 → 收集 → 验收 → 按规则查验 → 在 WSL 虚拟屏上后台录屏（`qa-record` 生成录屏脚本并试跑，Windows 样式指针真实移动点击 chromium 里的产物页面，Windows Terminal 配色的 xterm 里执行命令，ffmpeg 录 720p 带声音的 mp4）→ 标记完成。前一道题的 Claude Code 开始做题后就初始化下一道，多道题并行做题（配置「自动做题并行数」，默认 10）；某道题出错只停下这道题等待处理，其他题照常推进、照常取新题。运行中有两种关闭方式：「做完当前题后停止」不再取新题，已接管的题继续走完所有环节，全部完成或停下后自动关闭（只想跑一道题时，开始后马上点它即可）；「停止做题」不再取新题，也不再启动下一环节，在跑的环节跑完就关闭，题目停在当前状态，下次开始接着走。
 - **观看**：做题时在 WSL 终端执行详情「做题」卡片里的 `tmux -L feedback attach -r -t fbdo-<id>` 只读观看（Ctrl+b 再按 d 退出）。录屏全程在虚拟屏里，不占本机桌面、鼠标键盘和音箱。
 - **出错时**：题目停下，列表标出「需处理」，详情顶部红框给出原因、处理建议和「查看日志」「重试」「转人工」（录屏环节另有「重新生成录屏脚本并重试」）。在详情里直接点原有按钮（继续准备、重做、通过、打回等）也会让自动流程从新状态接着走。任意未完成的题可点「交给自动」。
 - 后端重启后两个开关都回到未开启，重新点开始即可接着推进已接管的题；`scripts/stop.sh` 在开关开着时会列出并拒绝停止（`--force` 除外）。

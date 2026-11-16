@@ -7,6 +7,7 @@
 """
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -29,6 +30,21 @@ CURSOR = '❯'
 
 class DriverError(RuntimeError):
     pass
+
+
+# 已发出 prompt、Claude Code 正在做题的题目 id（调度器据此开始准备下一道题）
+_started: set[int] = set()
+_started_lock = threading.Lock()
+
+
+def started(task_id: int) -> bool:
+    with _started_lock:
+        return task_id in _started
+
+
+def _mark_started(task_id: int, on: bool):
+    with _started_lock:
+        (_started.add if on else _started.discard)(task_id)
 
 
 def session_name(task_id: int) -> str:
@@ -216,12 +232,14 @@ def run_do(task_id: int, log, stop):
         paste_and_submit(name, t['user_prompt'])
         path = wait_session_file(pdir, before, t['user_prompt'], name, log, stop)
         log(f'已发送 会话 {path.stem}')
+        _mark_started(task_id, True)
         wait_done(name, path, cfg, log, stop)
         log('这一轮已结束')
     except DriverError:
         log('最后的屏幕：\n' + capture(name)[-2000:])
         raise
     finally:
+        _mark_started(task_id, False)
         kill(name)
     db.update_task(task_id, status=P.S_COLLECT, failed_from=None, last_error=None)
 

@@ -153,31 +153,68 @@ def test_auto_gen_api(client, monkeypatch):
 
 # ---------- 自动做题调度 ----------
 
+class Calls(list):
+    """记录调用的列表，另带一个可改的 busy 集合模拟在跑的任务。"""
+
+
 @pytest.fixture()
 def fake_steps(monkeypatch):
     """各环节的启动函数换成只记录调用。"""
-    calls = []
+    calls = Calls()
     for mod, name in ((P, 'start_prepare'), (P, 'start_collect'), (P, 'start_review'),
                       (claude_driver, 'start_auto_do'), (recorder, 'start_auto_record')):
         monkeypatch.setattr(mod, name, lambda tid, _n=name: calls.append((_n, tid)) or f'run-{_n}')
-    monkeypatch.setattr(jobs, 'busy_tasks', lambda: set())
+    busy: set[int] = set()
+    monkeypatch.setattr(jobs, 'busy_tasks', lambda: set(busy))
+    calls.busy = busy
     return calls
 
 
-def test_tick_picks_in_order_and_keeps_one_in_front(data_dir, fake_steps):
-    a, b = new_task(), new_task()
+@pytest.fixture(autouse=True)
+def _reset_started():
+    claude_driver._started.clear()
+    yield
+    claude_driver._started.clear()
+
+
+def test_tick_picks_next_after_claude_started(data_dir, fake_steps):
+    a, b, c = new_task(), new_task(), new_task()
     autopilot.tick()
     assert fake_steps == [('start_prepare', a)]
     assert db.get_task(a)['auto_run'] == 1 and db.get_task(b)['auto_run'] == 0
-    # 第一道还在做题线上（准备中视为在跑），不取第二道
+    # 第一道准备好进入待做题：Claude Code 启动中、还没发出 prompt，仍算在准备线上，不取第二道
     db.update_task(a, status=P.S_DO)
     autopilot.tick()
     assert ('start_auto_do', a) in fake_steps and db.get_task(b)['auto_run'] == 0
-    # 第一道进入后段后取第二道
-    db.update_task(a, status=P.S_REVIEW)
+    fake_steps.busy.add(a)
+    autopilot.tick()
+    assert db.get_task(b)['auto_run'] == 0
+    # prompt 发出、开始做题后，取第二道开始初始化；第二道准备中时不取第三道
+    claude_driver._mark_started(a, True)
     fake_steps.clear()
     autopilot.tick()
-    assert ('start_review', a) in fake_steps and ('start_prepare', b) in fake_steps
+    assert fake_steps == [('start_prepare', b)] and db.get_task(c)['auto_run'] == 0
+
+
+def test_tick_respects_parallel_cap(data_dir, fake_steps):
+    from app import config
+    config.save({'do_parallel_max': 2})
+    a, b = new_task(status=P.S_DO, auto_run=1), new_task(status=P.S_DO, auto_run=1)
+    pool = new_task()
+    fake_steps.busy.update({a, b})
+    claude_driver._mark_started(a, True)
+    claude_driver._mark_started(b, True)
+    autopilot.tick()
+    # 两个会话都在做题，已到上限，不取新题
+    assert db.get_task(pool)['auto_run'] == 0
+    # 已满时人工重试回到待做题的题先等着，不启动第三个会话
+    w = new_task(status=P.S_DO, auto_run=1)
+    autopilot.tick()
+    assert ('start_auto_do', w) not in fake_steps
+    fake_steps.busy.discard(b)
+    db.update_task(b, status=P.S_COLLECT)
+    autopilot.tick()
+    assert ('start_auto_do', w) in fake_steps
 
 
 def test_tick_without_pick(data_dir, fake_steps):
@@ -249,12 +286,13 @@ def test_auto_do_finish_api(client, monkeypatch):
 
 
 def test_tick_respects_backlog(data_dir, fake_steps):
+    from app import config
+    config.save({'auto_backlog_max': 2})
     for _ in range(2):
         new_task(status=P.S_REVIEW, auto_run=1)
     pool = new_task()
     autopilot.tick()
     assert db.get_task(pool)['auto_run'] == 0
-    from app import config
     config.save({'auto_backlog_max': 3})
     autopilot.tick()
     assert db.get_task(pool)['auto_run'] == 1
@@ -266,10 +304,13 @@ def test_tick_pauses_on_failure_and_env_blockers(data_dir, fake_steps):
     p = db.get_task(f)['auto_pause']
     assert p['step'] == P.S_COLLECT and '轨迹校验不通过' in p['reason']
     assert any('重做' in h for h in p['hints'])
-    # 做题线上的题停下时不取新题
+    # 出错只停下这道题：停下的题不占准备线与积压名额，照常取下一道
+    from app import config
+    config.save({'auto_backlog_max': 1})
     pool = new_task()
     autopilot.tick()
-    assert db.get_task(pool)['auto_run'] == 0
+    assert db.get_task(pool)['auto_run'] == 1 and ('start_prepare', pool) in fake_steps
+    autopilot.release(pool)
     autopilot.release(f)
     e = new_task(status=P.S_ENV, auto_run=1, materials=[{'path': 'a.png', 'state': 'missing', 'note': ''}],
                  env_check=[], net_check=[], client_check={'items': []})
@@ -337,7 +378,9 @@ def test_auto_status_and_list_flags(client):
     autopilot.pause(db.get_task(tid), '验收失败')
     s = client.get('/api/auto').json()
     assert s['do']['state'] == 'idle' and s['do']['pool'] == 1
-    assert [x['id'] for x in s['do']['paused']] == [tid] and len(s['do']['backlog']) == 1
+    # 停下的题列在需处理里，不计入后段积压
+    assert [x['id'] for x in s['do']['paused']] == [tid] and s['do']['backlog'] == []
+    assert s['do']['doing'] == [] and s['do']['doing_max'] == 10
     row = next(r for r in client.get('/api/tasks').json() if r['id'] == tid)
     assert row['auto_run'] == 1 and row['auto_paused'] is True
     d = client.get(f'/api/tasks/{tid}').json()

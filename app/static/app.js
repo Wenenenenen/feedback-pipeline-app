@@ -916,7 +916,8 @@ const CONFIG_FIELDS = [
   ['recording_dir', '录屏文件目录（WSL 路径，自动取其中最新的 mp4）'],
   ['upload_dir', '待上传文件目录（WSL 路径，轨迹与自动录屏放在这里，文件名为甲方序号-分支名）'],
   ['pool_gen_count', '补充题目池每轮出题数（1 到 10）', 'number'],
-  ['auto_backlog_max', '自动做题后段积压上限（验收 查验 录屏阶段的自动题达到该数量就暂不取新题）', 'number'],
+  ['do_parallel_max', '自动做题并行数（同时做题的 Claude Code 会话上限）', 'number'],
+  ['auto_backlog_max', '自动做题后段积压上限（收集 验收 查验 录屏阶段没停下的自动题达到该数量就暂不取新题）', 'number'],
   ['do_ready_timeout_sec', '等待 Claude Code 就绪（秒）', 'number'],
   ['do_timeout_min', '单题做题超时（分钟）', 'number'],
   ['do_idle_sec', '做完判定的静止时长（秒，轨迹记录本轮结束后再静止这么久才算做完）', 'number'],
@@ -960,7 +961,8 @@ async function loadAuto() {
   renderPoolCard();
   // 开关状态或自动题的状态有变化时刷新列表与详情
   const sig = s => JSON.stringify([s.gen?.state, s.gen?.added, s.do?.state, (s.do?.paused || []).map(x => x.id),
-    (s.do?.front || []).map(x => x.status), (s.do?.backlog || []).map(x => x.status)]);
+    (s.do?.preparing || []).map(x => x.status), (s.do?.doing || []).map(x => x.id),
+    (s.do?.backlog || []).map(x => x.status)]);
   if (prev.do && sig(prev) !== sig(autoState)) {
     loadList();
     if (current) showTask(current);
@@ -970,7 +972,8 @@ async function loadAuto() {
 function renderAutoBar() {
   const d = autoState.do || {};
   const st = d.state || 'idle';
-  const front = (d.front || [])[0];
+  const front = (d.preparing || [])[0];
+  const doingN = (d.doing || []).length;
   const paused = (d.paused || []).length;
   // 按钮随运行方式变化：未开启只有开始；运行中可选做完当前题后停止或立即停止；做完当前题后停止时可恢复取题
   const B = {
@@ -984,9 +987,10 @@ function renderAutoBar() {
     finishing: ['<span class="chip human">做完当前题后停止</span>', B.resume, B.stop], stopping: [B.stopping] }[st] || [B.start];
   $('#auto-bar').innerHTML = `
     ${buttons.join('')}
-    ${st !== 'idle' || front || paused ? `<span class="auto-sum">
-      ${front ? `<a href="#" data-goto="${front.id}" title="做题线当前的题">${esc(front.branch)} ${esc(front.status)}</a>` : '<span class="muted">做题线空闲</span>'}
-      <span title="验收 查验 录屏阶段的自动题 / 积压上限">后段 ${(d.backlog || []).length}/${esc(d.backlog_max ?? '-')}</span>
+    ${st !== 'idle' || front || doingN || paused ? `<span class="auto-sum">
+      ${front ? `<a href="#" data-goto="${front.id}" title="准备线当前的题（Claude Code 开始做题后就准备下一道）">准备 ${esc(front.branch)} ${esc(front.status)}</a>` : '<span class="muted">准备线空闲</span>'}
+      <span title="${esc((d.doing || []).map(x => x.branch).join(' ') || '没有在做题的会话')}">做题 ${doingN}/${esc(d.doing_max ?? '-')}</span>
+      <span title="收集 验收 查验 录屏阶段的自动题（不含停下的） / 积压上限">后段 ${(d.backlog || []).length}/${esc(d.backlog_max ?? '-')}</span>
       ${paused ? `<a href="#" class="bad" data-paused="1" title="只看自动流程停下待处理的题">需处理 ${paused}</a>` : ''}
       <span class="muted" title="待初始化且未被接管的题">池 ${esc(d.pool ?? 0)}</span>
       ${d.error ? `<span class="bad" title="${esc(d.error)}">调度出错</span>` : ''}</span>` : ''}`;

@@ -9,8 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import config, db
 
-# 自动做题会让做题、等待并发名额的任务长时间占着线程，线程数留足余量
-_pool = ThreadPoolExecutor(max_workers=16)
+# 自动做题会让做题、等待并发名额的任务长时间占着线程（最多 do_parallel_max 个会话同时做题），线程数留足余量
+_pool = ThreadPoolExecutor(max_workers=48)
 _task_locks: set[int] = set()
 _locks_guard = threading.Lock()
 _ai_sem_size = None

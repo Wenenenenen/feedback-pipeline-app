@@ -5,10 +5,13 @@
 重新开始自动做题后接着推进已接管的题。
 
 自动做题的节奏：
-- 做题线（待初始化、待准备环境、待做题、待收集，含在这些环节失败的）同时只有 1 道自动题；
+- 准备线（待初始化、待准备环境，以及待做题但 Claude Code 还没开始做的）同时只有 1 道自动题；
+- 前一道题的 prompt 已发出、Claude Code 开始做题后，就取下一道题开始初始化；
+- 同时在做题的 Claude Code 会话不超过配置的上限（do_parallel_max）；
 - 验收受 AI 并发上限约束，录屏同时只录 1 道；
-- 做题线空闲且后段（待验收、待查验、待录屏）积压少于配置的上限时，从题目池按 id 顺序取下一道。
-任一环节出错，题目停下（auto_pause 记下环节、原因、处理建议与出错运行），不影响其他题继续推进。
+- 准备线空闲、做题数未满且后段（待收集、待验收、待查验、待录屏）积压少于配置的上限时，从题目池按 id 顺序取下一道。
+任一环节出错，只停下这道题（auto_pause 记下环节、原因、处理建议与出错运行），停下的题不占准备线、
+做题与积压名额，其他题继续推进，也继续取新题。
 
 两种关闭方式：
 - 做完当前题后停止：不再取新题，已接管的题继续走完所有环节，全部完成或停下后自动关闭；
@@ -20,8 +23,8 @@ import traceback
 
 from . import claude_driver, config, db, envcheck, jobs, pipeline as P, recorder
 
-FRONT = {P.S_INIT, P.S_ENV, P.S_DO, P.S_COLLECT}
-BACK = {P.S_REVIEW, P.S_CHECK, P.S_RECORD}
+PREP = {P.S_INIT, P.S_ENV}
+BACK = {P.S_COLLECT, P.S_REVIEW, P.S_CHECK, P.S_RECORD}
 TICK_SEC = 5
 
 
@@ -256,10 +259,30 @@ def auto_busy() -> list[int]:
     return [t['id'] for t in auto_tasks() if t['id'] in busy]
 
 
-def advance(t: dict, busy: set[int], recording: bool) -> bool:
-    """按题目当前状态启动下一个环节。返回是否启动了录屏。"""
+def do_cap() -> int:
+    return max(1, int(config.load()['do_parallel_max']))
+
+
+def doing(tasks: list[dict], busy: set[int]) -> list[dict]:
+    """占着 Claude Code 会话的题：待做题且自动做题任务在跑（含刚启动、还没发出 prompt 的）。"""
+    return [t for t in tasks if t['status'] == P.S_DO and t['id'] in busy]
+
+
+def preparing(tasks: list[dict]) -> list[dict]:
+    """准备线上没停下的题：待初始化、待准备环境，或待做题但 Claude Code 还没开始做。"""
+    return [t for t in tasks if not t.get('auto_pause') and
+            (stage(t) in PREP or (stage(t) == P.S_DO and not claude_driver.started(t['id'])))]
+
+
+def backlog(tasks: list[dict]) -> list[dict]:
+    """后段没停下的题（停下的题等待处理，不占积压名额）。"""
+    return [t for t in tasks if not t.get('auto_pause') and stage(t) in BACK]
+
+
+def advance(t: dict, busy: set[int], slots: dict) -> None:
+    """按题目当前状态启动下一个环节。slots 记录录屏是否占用、在做题的会话数，启动时随之更新。"""
     if t['id'] in busy or t.get('auto_pause'):
-        return False
+        return
     s = t['status']
     tid = t['id']
     try:
@@ -274,7 +297,11 @@ def advance(t: dict, busy: set[int], recording: bool) -> bool:
             blockers = P.env_blockers(t)
             pause(t, '准备环境有需要人工处理的项：\n' + '\n'.join(blockers or ['见环境检查']))
         elif s == P.S_DO:
+            # 同时做题的会话已满时先等着（如人工重试让多道题同时回到待做题）
+            if slots['doing'] >= do_cap():
+                return
             claude_driver.start_auto_do(tid)
+            slots['doing'] += 1
         elif s == P.S_COLLECT:
             P.start_collect(tid)
         elif s == P.S_REVIEW:
@@ -286,15 +313,14 @@ def advance(t: dict, busy: set[int], recording: bool) -> bool:
             else:
                 P.approve(tid)
         elif s == P.S_RECORD:
-            if recording:
-                return False
+            if slots['recording']:
+                return
             recorder.start_auto_record(tid)
-            return True
+            slots['recording'] = True
     except jobs.Busy:
         pass
-    except Exception as e:  # noqa: BLE001 启动环节出错时停下这道题
+    except Exception as e:  # noqa: BLE001 启动环节出错时只停下这道题
         pause(db.get_task(tid) or t, f'启动下一环节失败：{e}')
-    return False
 
 
 def tick(pick: bool = True):
@@ -302,20 +328,21 @@ def tick(pick: bool = True):
     cfg = config.load()
     busy = jobs.busy_tasks()
     tasks = auto_tasks()
-    recording = any(t['status'] == P.S_RECORD and t['id'] in busy for t in tasks)
+    slots = {'recording': any(t['status'] == P.S_RECORD and t['id'] in busy for t in tasks),
+             'doing': len(doing(tasks, busy))}
     for t in tasks:
-        recording = advance(t, busy, recording) or recording
+        advance(t, busy, slots)
     if not pick:
         return
     tasks = auto_tasks()
-    front = [t for t in tasks if stage(t) in FRONT]
-    backlog = [t for t in tasks if stage(t) in BACK]
-    if front or len(backlog) >= int(cfg['auto_backlog_max']):
+    busy = jobs.busy_tasks()
+    if (preparing(tasks) or len(doing(tasks, busy)) >= do_cap()
+            or len(backlog(tasks)) >= int(cfg['auto_backlog_max'])):
         return
     nxt = next_pool_task()
     if nxt:
         t = db.update_task(nxt['id'], auto_run=1, auto_pause=None)
-        advance(t, jobs.busy_tasks(), recording)
+        advance(t, busy, slots)
 
 
 def next_pool_task() -> dict | None:
@@ -379,8 +406,10 @@ def status() -> dict:
     with do_loop.lock:
         do = {'state': do_loop.state, 'error': do_loop.error, 'started_at': do_loop.started_at}
     do.update(
-        front=[brief(t) for t in tasks if stage(t) in FRONT],
-        backlog=[brief(t) for t in tasks if stage(t) in BACK],
+        preparing=[brief(t) for t in preparing(tasks)],
+        doing=[brief(t) for t in doing(tasks, busy)],
+        doing_max=do_cap(),
+        backlog=[brief(t) for t in backlog(tasks)],
         paused=[brief(t) for t in tasks if t.get('auto_pause')],
         running=[t['id'] for t in tasks if t['id'] in busy],
         pool=len([t for t in db.list_tasks(P.S_INIT) if not t.get('auto_run')]),

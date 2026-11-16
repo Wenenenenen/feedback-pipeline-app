@@ -84,12 +84,14 @@ DEFAULTS = {
     # 录屏软件的输出目录（WSL 路径），完成录屏时自动取其中最新的 mp4
     'recording_dir': '/mnt/e/GSB-Recordings',
     # 待上传文件目录（WSL 路径）：收集留存的轨迹与自动录屏放在一起，文件名为「甲方序号-分支名」
-    'upload_dir': '/mnt/e/feedback-upload',
+    'upload_dir': '/mnt/e/WorkSpace/jianzhi/feedback-upload',
     # ---------- 自动出题与自动做题 ----------
     # 补充题目池每轮出题数量
     'pool_gen_count': 10,
-    # 自动做题时，验收、查验、录屏阶段积压的自动题达到该数量就暂不取新题
-    'auto_backlog_max': 2,
+    # 自动做题时，收集、验收、查验、录屏阶段积压的自动题（不含停下的）达到该数量就暂不取新题
+    'auto_backlog_max': 10,
+    # 自动做题时同时做题的 Claude Code 会话上限
+    'do_parallel_max': 10,
     # 等待 Claude Code 启动到可输入状态的上限（秒）
     'do_ready_timeout_sec': 180,
     # 单题做题的超时（分钟），超时后关闭会话并判为失败

@@ -595,7 +595,7 @@ def test_static_no_cache(client):
     """页面资源要求浏览器每次确认更新，避免改了样式还用旧缓存。"""
     r = client.get('/style.css')
     assert r.status_code == 200 and r.headers['cache-control'] == 'no-cache'
-    assert 'height: calc(100vh - 48px)' in r.text
+    assert 'max-height: calc(100vh - var(--header-h)' in r.text
 
 
 def test_record_issues(client):
