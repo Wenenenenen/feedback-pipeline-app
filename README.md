@@ -25,7 +25,7 @@
 | 做题客户端 | WSL 中安装 Claude Code（`bash -ic` 能找到 `claude`），并按作业要求配置：`~/.claude/settings.json` 的 env 含 `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000`、`DISABLE_COMPACT=1`、`ANTHROPIC_BETAS` 含 `context-1m-2025-08-07`；不放全局 CLAUDE.md、rules、skills、agents、commands、插件、hooks、MCP | 页面「环境检查」会逐项体检 |
 | Codex | Windows 中安装 Codex CLI（如 `npm i -g @openai/codex`），用 ChatGPT 账号登录（`codex login`），或用 CC Switch 等工具配置第三方供应商（见下面配置里的「沿用 config.toml 的供应商与模型」） | Windows 中 `codex login status`；第三方供应商以冒烟为准 |
 | 验收与自动化工具 | WSL 中的 ffmpeg、playwright + chromium；自动做题与自动录屏另需 tmux、xvfb、pulseaudio、fonts-noto-cjk、xterm、xdotool、x11-xserver-utils | 运行下面的 `setup-verify-tools.sh`；点「开始做题」时也会检查 |
-| 录屏软件 | 人工录屏时输出 mp4 到固定目录（默认 `E:\GSB-Recordings`）；自动录屏直接写到这个目录 | — |
+| 录屏软件 | 人工录屏时输出 mp4 到固定目录（默认 `E:\GSB-Recordings`）；自动录屏不经过录屏软件，直接写到待上传文件目录 | — |
 
 ### 2. 克隆与启动
 
@@ -51,6 +51,7 @@ bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/setup-verify-tools.s
 - **GitHub 仓库**：存放做题快照的产物仓库 ssh 地址；
 - **WSL 发行版名**：与 `wsl -l` 中的名称一致；
 - **录屏文件目录**：录屏软件输出目录的 WSL 路径（如 `/mnt/e/GSB-Recordings`）；
+- **待上传文件目录**：收集留存的轨迹与自动录屏放在一起的目录（WSL 路径，默认 `/mnt/e/feedback-upload`），文件名为「甲方序号-分支名」，改甲方序号时随之改名；
 - **沿用 config.toml 的供应商与模型**：codex 用 CC Switch 或手工配置的第三方 API 时勾选。流水线调用 codex 时带 `--ignore-user-config`，不加载 `config.toml`；勾选后每次运行前只读取 Windows `config.toml` 中的 `model`、`model_provider` 和对应的 `[model_providers.<名称>]` 一节，转成 `-m`、`-c` 参数传给 codex，MCP、插件等仍不加载。CC Switch 切换供应商后流水线自动跟随，不用改配置；API key 由 CC Switch 写在 `auth.json`，流水线不读也不改。`config.toml` 没有 `model` 时用配置页的模型名；推理强度始终用配置页的值；
 - **config.toml 路径**：一般留空，自动按 Windows 的 `CODEX_HOME` 或 `%USERPROFILE%\.codex\config.toml` 定位；定位不到时填它的 WSL 路径（如 `/mnt/c/Users/<用户名>/.codex/config.toml`）；
 - 模型名、推理强度、并发数、超时、连续重连上限、端口段、各目录根一般保持默认。

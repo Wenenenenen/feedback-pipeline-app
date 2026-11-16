@@ -51,7 +51,7 @@ WSL  ~/jianzhi/feedback-pipeline/                    流水线运行时
        .venv/                               Python 虚拟环境
        data/pipeline.db                     题目队列与全部字段
        data/backups/                        数据库每日备份
-       data/trajectories/                   复制出的待上传轨迹 jsonl
+       data/trajectories/                   早期复制出的轨迹 jsonl（新收集的轨迹放到待上传文件目录）
        data/logs/                           每次运行日志
        data/record-runs/<运行ID>/            自动录屏的工作目录（虚拟屏与声卡日志、录屏前准备输出、试跑截图、录屏脚本）
        data/config.json                     页面「配置」保存的本机配置
@@ -165,7 +165,7 @@ WSL  ~/jianzhi/feedback-record/<分支名>/              录屏用的产物全�
   - 提交信息固定为 `feat: 模型产物 - <分支名>`，点「开始收集」直接执行，不再询问概述；
   - 推送后记录产物快照（模型自己提交过多次则以最后一次为准，不 squash），并校验初始快照是其祖先提交。
 - 生成轨迹摘要：按时间顺序列出每次工具调用（工具名、参数要点、结果是否报错）、改动的文件、报错原文、模型最终回复；同时保存完整 jsonl 的 `\\wsl.localhost\...` 路径。
-- 复制轨迹 jsonl 到 `data/trajectories/` 待上传。
+- 复制轨迹 jsonl 到待上传文件目录（配置项，默认 `E:\feedback-upload`），文件名为「甲方序号-分支名.jsonl」（没有甲方序号时只用分支名），与自动录屏放在一起；重做后再收集时覆盖。修改甲方序号时，该目录里这道题的轨迹与录屏随之改名。
 
 ### 5.6 验收与写 Feedback（skill `qa-review`）
 
@@ -282,7 +282,7 @@ WSL  ~/jianzhi/feedback-record/<分支名>/              录屏用的产物全�
 - 试跑改变了服务与录屏目录的状态，生成脚本后执行收尾、重新克隆、重新执行录屏前准备，再正式录制。
 - 画面接近 Windows 本机：`app/wincursor.py` 生成 Windows 样式的 X 光标主题（白色箭头带阴影、链接上的手形、文本 I 形，主题名为 default，Chromium 另由单独的 GTK 设置指定），虚拟屏通过 fontconfig 使用 Windows 自带字体（`/mnt/c/Windows/Fonts` 中的 Cascadia Mono 或 Consolas、Segoe UI、微软雅黑等）。
 - 执行器（`app/record_harness/harness.mjs`，使用全局安装的 playwright）在虚拟屏上打开两个铺满全屏的窗口：有界面的 chromium（软件渲染 WebGL，去掉自动化提示条）放产物页面，xterm 作终端（Windows Terminal 的 Campbell 配色与字体，加载 `~/.bashrc`，提示符与新开 WSL 终端一致，不写命令历史）。用 xdotool 驱动真实的系统指针（平滑移动、真实点击、滚轮）与终端键盘输入，切换窗口时置顶并聚焦；终端命令逐字打出后回车，靠提示符钩子写出的退出码判断结束。脚本的 `prepare` 部分开录前执行，`run` 部分由 ffmpeg 录下整块虚拟屏、系统指针与虚拟声卡，生成 720p mp4，时长受配置上限约束（默认 90 秒）；试跑与出错时的截图都是整块屏幕。
-- 录完执行收尾并清理虚拟屏、声卡与服务进程；用 ffprobe 校验时长不超过上限、分辨率为 1280x720，合格后移到录屏文件目录（文件名为分支名加时间），标记完成。
+- 录完执行收尾并清理虚拟屏、声卡与服务进程；用 ffprobe 校验时长不超过上限、分辨率为 1280x720，合格后移到待上传文件目录（文件名为「甲方序号-分支名.mp4」，与轨迹同名，重录时覆盖），标记完成。
 
 **停下与处理**：
 

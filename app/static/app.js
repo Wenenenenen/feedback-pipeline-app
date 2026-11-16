@@ -914,6 +914,7 @@ const CONFIG_FIELDS = [
   ['verify_root', '验收目录根'],
   ['record_root', '录屏目录根'],
   ['recording_dir', '录屏文件目录（WSL 路径，自动取其中最新的 mp4）'],
+  ['upload_dir', '待上传文件目录（WSL 路径，轨迹与自动录屏放在这里，文件名为甲方序号-分支名）'],
   ['pool_gen_count', '补充题目池每轮出题数（1 到 10）', 'number'],
   ['auto_backlog_max', '自动做题后段积压上限（验收 查验 录屏阶段的自动题达到该数量就暂不取新题）', 'number'],
   ['do_ready_timeout_sec', '等待 Claude Code 就绪（秒）', 'number'],

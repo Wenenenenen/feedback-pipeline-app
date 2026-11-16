@@ -83,6 +83,8 @@ DEFAULTS = {
     'builtin_skills': BUILTIN_SKILLS,
     # 录屏软件的输出目录（WSL 路径），完成录屏时自动取其中最新的 mp4
     'recording_dir': '/mnt/e/GSB-Recordings',
+    # 待上传文件目录（WSL 路径）：收集留存的轨迹与自动录屏放在一起，文件名为「甲方序号-分支名」
+    'upload_dir': '/mnt/e/feedback-upload',
     # ---------- 自动出题与自动做题 ----------
     # 补充题目池每轮出题数量
     'pool_gen_count': 10,

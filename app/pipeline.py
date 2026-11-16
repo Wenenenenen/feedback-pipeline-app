@@ -50,6 +50,38 @@ def task_dir(t: dict) -> Path:
     return config.path_of('tasks_root') / t['branch']
 
 
+def upload_dir() -> Path:
+    """待上传文件目录：收集留存的轨迹与自动录屏放在一起。"""
+    d = config.path_of('upload_dir')
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def upload_stem(t: dict, seq: str | None = None) -> str:
+    """待上传文件名（不含扩展名）：甲方序号-分支名，没有甲方序号时只用分支名。"""
+    seq = t.get('client_seq') if seq is None else seq
+    return f"{seq}-{t['branch']}" if seq else t['branch']
+
+
+def rename_uploads(t: dict, seq: str | None) -> dict:
+    """甲方序号变化时，把待上传目录里这道题的轨迹与录屏改成新文件名；返回要更新的路径字段。
+    不在待上传目录里的文件（历史题目、人工录屏）保持不动。"""
+    d = config.path_of('upload_dir')
+    fields = {}
+    for key, to_wsl, to_stored in (('trajectory_path', str, str),
+                                   ('recording_link', config.wsl_path, config.win_path)):
+        if not t.get(key):
+            continue
+        old = Path(to_wsl(t[key]))
+        if old.parent != d or not old.exists():
+            continue
+        new = d / f'{upload_stem(t, seq or "")}{old.suffix}'
+        if new != old:
+            old.replace(new)
+            fields[key] = to_stored(new)
+    return fields
+
+
 def unc(path: Path) -> str:
     """WSL 路径转换为 Windows 侧可读的 UNC 路径。"""
     return config.unc(path)
@@ -421,10 +453,10 @@ def start_collect(task_id: int, summary: str = '') -> str:
         art = gitops.commit_artifact(d, t['branch'], t['init_sha'], t['ignored_before'],
                                      summary=(summary or '').strip(), log=log)
         log(f"产物快照 {config.permalink(art['sha'])} 补交被忽略文件 {art['forced_ignored']}")
-        tdir = config.DATA_DIR / 'trajectories'
-        tdir.mkdir(parents=True, exist_ok=True)
-        copy = tdir / f"{t['branch']}-{info['session_id']}.jsonl"
+        # 轨迹留存到待上传目录，与自动录屏放在一起；重做后再次收集会覆盖为新会话的轨迹
+        copy = upload_dir() / f"{upload_stem(db.get_task(task_id))}.jsonl"
         shutil.copy2(path, copy)
+        log(f'轨迹已留存 {config.unc(copy)}')
         traj_summary = trajectory.summarize(path)
         remark = t['remark'] or ''
         if v['continue_count']:
@@ -682,7 +714,8 @@ def set_client_seq(task_id: int, text: str) -> dict:
     used = {s: b for s, b in db.used_client_seqs(seqs).items() if b != t['branch']}
     if used:
         raise ActionError('甲方序号已被占用：' + _seq_taken_text(used))
-    return db.update_task(task_id, client_seq=seq)
+    # 待上传目录里的轨迹与录屏随甲方序号改名，方便上传时辨认
+    return db.update_task(task_id, client_seq=seq, **rename_uploads(t, seq))
 
 
 # ---------- 质检登记与返修 ----------

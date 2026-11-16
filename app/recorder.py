@@ -453,9 +453,8 @@ def run_record(task_id: int, run_key: str, log, stop):
         finally:
             cleanup(t, rdir, env, vs, log)
     info = check_video(out, max_sec)
-    dest_dir = Path(cfg['recording_dir']).expanduser()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{t['branch']}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
+    # 放到待上传目录，与轨迹同名（甲方序号-分支名）；重新录屏时覆盖旧文件
+    dest = P.upload_dir() / f"{P.upload_stem(db.get_task(task_id))}.mp4"
     shutil.move(str(out), dest)
     log(f"录屏完成 {config.win_path(dest)} 时长 {info['duration']} 秒 {info['width']}x{info['height']}")
     P.complete(task_id, config.win_path(dest))

@@ -869,3 +869,30 @@ def test_migrate_drops_seq(data_dir):
         new_task(branch='dup', client_seq='5600')
     db.delete_task(tid)
     assert new_task(branch='reuse', client_seq='5600')
+
+
+def test_upload_names_follow_client_seq(client, tmp_path):
+    """待上传目录里的轨迹与录屏以「甲方序号-分支名」命名，改甲方序号时一起改名；目录外的文件不动。"""
+    up = tmp_path / 'upload'
+    client.put('/api/config', json={'upload_dir': str(up)})
+    t = db.get_task(new_task(status=pipeline.S_DONE, client_seq='12100'))
+    assert pipeline.upload_stem(t) == '12100-demo'
+    assert pipeline.upload_stem(db.get_task(new_task(branch='no-seq'))) == 'no-seq'
+    d = pipeline.upload_dir()
+    (d / '12100-demo.jsonl').write_text('{}', encoding='utf-8')
+    (d / '12100-demo.mp4').write_bytes(b'x')
+    old_rec = tmp_path / 'old.mp4'
+    old_rec.write_bytes(b'x')
+    db.update_task(t['id'], trajectory_path=str(d / '12100-demo.jsonl'),
+                   recording_link=config.win_path(d / '12100-demo.mp4'))
+    r = client.post(f"/api/tasks/{t['id']}/action/client_seq", json={'client_seq': '12101'})
+    assert r.status_code == 200
+    t = db.get_task(t['id'])
+    assert t['trajectory_path'] == str(d / '12101-demo.jsonl') and (d / '12101-demo.jsonl').exists()
+    assert t['recording_link'] == config.win_path(d / '12101-demo.mp4') and (d / '12101-demo.mp4').exists()
+    assert not (d / '12100-demo.jsonl').exists()
+    # 清空甲方序号退回只用分支名；历史文件在目录外不改名
+    db.update_task(t['id'], recording_link=str(old_rec))
+    client.post(f"/api/tasks/{t['id']}/action/client_seq", json={'client_seq': ''})
+    t = db.get_task(t['id'])
+    assert t['trajectory_path'] == str(d / 'demo.jsonl') and t['recording_link'] == str(old_rec)
