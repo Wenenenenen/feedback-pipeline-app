@@ -140,11 +140,13 @@ def test_gen_loop_stops_after_empty_rounds(data_dir, monkeypatch):
 
 
 def test_auto_gen_api(client, monkeypatch):
+    """补充题目池暂停使用：开始一律拒绝；已在运行的仍可停止。"""
     started = threading.Event()
     monkeypatch.setattr(autopilot.gen_loop, '_loop', lambda: started.set())
-    r = client.post('/api/auto/gen', json={'action': 'start'}).json()
-    assert r['gen']['state'] == 'running' and started.wait(2)
-    assert client.post('/api/auto/gen', json={'action': 'start'}).status_code == 400
+    r = client.post('/api/auto/gen', json={'action': 'start'})
+    assert r.status_code == 400 and '暂停使用' in r.json()['detail']
+    assert not started.is_set() and autopilot.gen_loop.status()['state'] == 'idle'
+    autopilot.gen_loop.state = 'running'
     assert client.post('/api/auto/gen', json={'action': 'stop'}).json()['gen']['state'] == 'stopping'
     autopilot.gen_loop.state = 'idle'
 

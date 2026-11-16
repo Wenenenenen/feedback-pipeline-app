@@ -81,8 +81,6 @@ DEFAULTS = {
     'record_root': '~/jianzhi/feedback-record',
     'claude_home': '~/.claude',
     'builtin_skills': BUILTIN_SKILLS,
-    # 提交表里已有的最大序号，新完成的题目从它后面接续编号
-    'seq_base': 10,
     # 录屏软件的输出目录（WSL 路径），完成录屏时自动取其中最新的 mp4
     'recording_dir': '/mnt/e/GSB-Recordings',
     # ---------- 自动出题与自动做题 ----------

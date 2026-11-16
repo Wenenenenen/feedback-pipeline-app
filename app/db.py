@@ -154,10 +154,15 @@ def delete_task(task_id: int):
         c.commit()
 
 
-def max_seq() -> int:
+def used_client_seqs(seqs: list[str]) -> dict[str, str]:
+    """给定的甲方序号中已被未删除题目占用的，返回 {甲方序号: 分支名}。"""
+    if not seqs:
+        return {}
+    marks = ', '.join('?' for _ in seqs)
     with _lock:
-        r = conn().execute('SELECT MAX(seq) FROM qa_task WHERE deleted = 0').fetchone()
-        return r[0] or 0
+        rows = conn().execute(f'SELECT client_seq, branch FROM qa_task WHERE deleted = 0 AND client_seq IN ({marks})',
+                              list(seqs)).fetchall()
+        return {r[0]: r[1] for r in rows}
 
 
 # ---------- 质检记录 ----------

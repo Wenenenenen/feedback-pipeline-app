@@ -15,6 +15,7 @@
   </div>
   <nav>
     <button data-tab="tasks" class="tab active">题目</button>
+    <button data-tab="submission" class="tab">提交表</button>
     <button data-tab="gen" class="tab">批量出题</button>
     <button data-tab="config" class="tab">配置</button>
     <button id="log-open" class="nav-btn" title="打开运行日志 运行中的任务各占一个标签">日志</button>
@@ -32,7 +33,7 @@
         <span class="spacer"></span>
         <span class="auto-bar" id="auto-bar"></span>
         <span class="count" id="task-count"></span>
-        <button id="submission" class="primary" title="勾选题目时只看勾选的 否则看全部已完成的">提交表</button>
+        <button id="submission" class="primary" title="打开提交表页 勾选题目时只看勾选的 否则看全部已完成的">提交表</button>
       </div>
       <table id="task-table">
         <thead><tr><th><input type="checkbox" id="check-all"></th><th>序号</th><th>题目</th><th>难度</th><th>状态</th><th>更新</th></tr></thead>
@@ -40,6 +41,27 @@
       </table>
     </div>
     <div class="detail-pane" id="detail"><div class="empty-state"><div><b>未选择题目</b>点左侧任意一行查看详情与可执行操作</div></div></div>
+  </section>
+
+  <!-- 提交表：每道题一块，单元格点击即复制 -->
+  <section id="tab-submission" class="tab-body hidden">
+    <div class="sub-page">
+      <div class="sub-head">
+        <h3>提交表</h3><span class="muted" id="sub-scope"></span>
+        <span class="seg">
+          <button type="button" id="sub-scope-all" class="ghost">全部已完成</button>
+          <button type="button" id="sub-scope-checked" class="ghost" title="题目页列表里勾选的题目">列表勾选的</button>
+        </span>
+        <span class="spacer"></span>
+        <span class="muted hint">点单元格复制该格 复制整行可直接粘贴到表格</span>
+        <button type="button" id="sub-refresh" class="ghost">刷新</button>
+        <button type="button" id="sub-expand" class="ghost">全部展开</button>
+        <button type="button" id="sub-collapse" class="ghost">全部折叠</button>
+        <button type="button" id="sub-copy-head">复制表头</button>
+        <button type="button" id="sub-xlsx" class="primary" title="按当前页里的题目导出 列顺序同提交表">导出 Excel</button>
+      </div>
+      <div class="sub-body" id="sub-body"></div>
+    </div>
   </section>
 
   <!-- 批量出题 -->
@@ -53,8 +75,9 @@
             <div class="ctl"><div><span class="domain-lock" id="gen-domain-label"></span></div><input type="hidden" name="domain" id="gen-domain"></div></div>
           <div class="field"><div class="lab">子方向</div>
             <div class="ctl"><select name="subdomain" id="gen-sub"><option value="">由 AI 选择</option></select></div></div>
-          <div class="field"><div class="lab">数量<small>1 到 10</small></div>
-            <div class="ctl"><input name="count" type="number" min="1" max="10" value="3"></div></div>
+          <div class="field"><div class="lab">甲方序号<small>决定出题数量 1 到 10 个</small></div>
+            <div class="ctl"><input name="client_seqs" id="gen-seqs" required placeholder="如 12100-12107 或 12100, 12101, 12105">
+              <div class="muted hint" id="gen-seqs-hint">逗号或空格分隔，连续的写成区间；入库的题按顺序分配这些序号</div></div></div>
           <div class="field"><div class="lab">难度</div>
             <div class="ctl"><select name="difficulty"><option value="">由 AI 判断</option><option>困难</option><option>地狱</option></select></div></div>
           <div class="field"><div class="lab">技术栈偏好<small>可选</small></div>
@@ -81,22 +104,6 @@
   <div class="log-head"><div id="log-tabs" role="tablist"></div><span id="log-status"></span>
     <button id="log-stop">停止</button><button id="log-close">关闭全部</button></div>
   <pre id="log-body"></pre>
-</div>
-<!-- 提交表弹窗：每道题一块，单元格点击即复制 -->
-<div id="sub-modal" class="modal hidden">
-  <div class="modal-box" role="dialog" aria-label="提交表">
-    <div class="modal-head">
-      <h3>提交表</h3><span class="muted" id="sub-scope"></span>
-      <span class="spacer"></span>
-      <span class="muted hint">点单元格复制该格 复制整行可直接粘贴到表格</span>
-      <button type="button" id="sub-expand" class="ghost">全部展开</button>
-      <button type="button" id="sub-collapse" class="ghost">全部折叠</button>
-      <button type="button" id="sub-copy-head">复制表头</button>
-      <button type="button" id="sub-xlsx" class="primary" title="按当前弹窗里的题目导出 列顺序同提交表">导出 Excel</button>
-      <button type="button" id="sub-close" class="ghost">关闭</button>
-    </div>
-    <div class="modal-body" id="sub-body"></div>
-  </div>
 </div>
 <div id="toast" class="hidden"></div>
 <script src="app.js"></script>

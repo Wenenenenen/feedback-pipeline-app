@@ -137,12 +137,15 @@ function link(url, empty = '未提交') {
 }
 
 // ---------- 标签页 ----------
-document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
-  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === b));
-  document.querySelectorAll('.tab-body').forEach(x => x.classList.toggle('hidden', x.id !== 'tab-' + b.dataset.tab));
-  if (b.dataset.tab === 'gen') loadGenRuns();
-  if (b.dataset.tab === 'config') loadConfig();
-});
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
+  document.querySelectorAll('.tab-body').forEach(x => x.classList.toggle('hidden', x.id !== 'tab-' + name));
+  if (name === 'gen') loadGenRuns();
+  if (name === 'config') loadConfig();
+  // 提交表每次切进来都按当前范围重新读取
+  if (name === 'submission') run(loadSubmission);
+}
+document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // ---------- 列表 ----------
 async function loadList() {
@@ -157,7 +160,7 @@ async function loadList() {
   $('#task-table tbody').innerHTML = rows.map(t => `
     <tr data-id="${t.id}" class="${t.id === current ? 'sel' : ''}">
       <td><input type="checkbox" class="row-check" value="${t.id}" ${checked.has(t.id) ? 'checked' : ''}></td>
-      <td class="t-seq">${t.seq ? '#' + esc(t.seq) : '—'}${t.client_seq ? `<div class="t-client" title="甲方平台序号">甲方 #${esc(t.client_seq)}</div>` : ''}</td>
+      <td class="t-seq">${t.client_seq ? '#' + esc(t.client_seq) : '—'}${t.client_submit_time ? `<div class="t-client" title="已在甲方平台提交 ${esc(t.client_submit_time)}">已提交</div>` : ''}</td>
       <td><div class="t-branch">${esc(t.branch)}</div><div class="t-sub">${esc(t.subdomain)}</div></td>
       <td>${esc(t.difficulty)}</td>
       <td><div class="chip-stack"><span class="chip ${statusClass(t.status)}">${esc(t.status)}</span>
@@ -193,26 +196,41 @@ function tsvCell(v) {
   return /[\t\n\r"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 
-// 甲方提交标记：已提交显示甲方序号，未提交给出标记按钮；未编号的题不能标记
-function clientMarkHtml(r, seq) {
-  if (r.client_seq) {
-    return `<span class="chip ok" title="已在甲方平台提交 ${esc(r.client_submit_time || '')}">甲方 #${esc(r.client_seq)}</span>
-      <button type="button" class="ghost" data-client-mark="${r.id}" title="修改甲方序号 留空则取消已提交标记">改</button>`;
+// 甲方提交标记：已提交时可取消，未提交给出标记按钮；没有甲方序号的题不能标记
+function clientMarkHtml(r) {
+  if (r.client_submit_time) {
+    return `<span class="chip ok" title="已在甲方平台提交 ${esc(r.client_submit_time)}">甲方已提交</span>
+      <button type="button" class="ghost" data-client-mark="${r.id}" title="取消已提交标记">取消</button>`;
   }
-  return seq ? `<span class="chip">甲方未提交</span>
-      <button type="button" data-client-mark="${r.id}" title="在甲方平台提交后点这里填写甲方序号">标记已提交</button>` : '';
+  return r.client_seq ? `<span class="chip">甲方未提交</span>
+      <button type="button" data-client-mark="${r.id}" title="在甲方平台提交后点这里标记">标记已提交</button>` : '';
 }
 
-// 弹窗填写甲方序号：返回保存后的题目，取消时返回 null
-async function editClientSeq(id, cur) {
-  const s = prompt('甲方平台的序号（留空则取消已提交标记）', cur || '');
-  if (s === null) return null;
-  await api(`/api/tasks/${id}/action/client_submit`, { method: 'POST', body: { client_seq: s } });
-  toast(s.trim() ? '已标记甲方提交' : '已取消甲方提交标记');
+// 标记或取消甲方提交：返回保存后的题目，放弃取消时返回 null
+async function toggleClientSubmit(id, submitted) {
+  if (submitted && !confirm('取消「已在甲方平台提交」标记？')) return null;
+  await api(`/api/tasks/${id}/action/client_submit`, { method: 'POST', body: { submitted: !submitted } });
+  toast(submitted ? '已取消甲方提交标记' : '已标记甲方提交');
   return api('/api/tasks/' + id);
 }
 
-// 导出 Excel：范围与弹窗一致（勾选的题目，或全部已完成的），文件名取后端给的带时间戳的名字
+// 弹窗修改或补填甲方序号：返回保存后的题目，取消时返回 null
+async function editClientSeq(id, cur) {
+  const s = prompt('甲方序号（留空则清除）', cur || '');
+  if (s === null) return null;
+  await api(`/api/tasks/${id}/action/client_seq`, { method: 'POST', body: { client_seq: s } });
+  toast(s.trim() ? '已保存甲方序号' : '已清除甲方序号');
+  return api('/api/tasks/' + id);
+}
+
+// User Prompt 的第一句：取第一个非空行到第一个句末标点，过长时只截开头
+function promptHead(text, max = 80) {
+  const line = String(text || '').split('\n').map(s => s.trim()).find(Boolean) || '';
+  const first = /^[^。！？!?；;]*[。！？!?；;]?/.exec(line)[0];
+  return first.length > max ? first.slice(0, max) + '…' : first;
+}
+
+// 导出 Excel：范围与提交表页一致（勾选的题目，或全部已完成的），文件名取后端给的带时间戳的名字
 async function downloadSubmission(ids) {
   const res = await fetch('/api/submission/xlsx', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
@@ -228,10 +246,24 @@ async function downloadSubmission(ids) {
   toast('已导出 ' + a.download);
 }
 
-async function openSubmission() {
-  const ids = [...document.querySelectorAll('.row-check:checked')].map(x => +x.value);
+// 提交表范围：all 为全部已完成的题，checked 为题目列表里勾选的题
+let subScope = 'all';
+
+function checkedIds() {
+  return [...document.querySelectorAll('.row-check:checked')].map(x => +x.value);
+}
+
+async function loadSubmission() {
+  const checked = checkedIds();
+  // 选了「勾选的题目」但列表里没有勾选时退回全部已完成
+  const useChecked = subScope === 'checked' && checked.length > 0;
+  const ids = useChecked ? checked : [];
   const data = await api('/api/submission', { method: 'POST', body: { ids } });
-  $('#sub-scope').textContent = ids.length ? `勾选的 ${data.rows.length} 题` : `全部已完成的 ${data.rows.length} 题`;
+  $('#sub-scope-all').classList.toggle('active', !useChecked);
+  $('#sub-scope-checked').classList.toggle('active', useChecked);
+  $('#sub-scope-checked').disabled = !checked.length;
+  $('#sub-scope-checked').textContent = `列表勾选的${checked.length ? ` ${checked.length} 题` : ''}`;
+  $('#sub-scope').textContent = useChecked ? `勾选的 ${data.rows.length} 题` : `全部已完成的 ${data.rows.length} 题`;
   // 每行可折叠：只有一题时默认展开，多题时默认折叠
   const openRow = data.rows.length <= 1;
   $('#sub-body').innerHTML = data.rows.map((r, ri) => {
@@ -246,10 +278,11 @@ async function openSubmission() {
         <span class="seq">${r.cells[0].value ? '#' + esc(r.cells[0].value) : '未编号'}</span>
         <b class="mono">${esc(r.branch)}</b><span class="chip ${statusClass(r.status)}">${esc(r.status)}</span>
         ${reworkChip}
-        <span class="client-mark" data-client-slot="${ri}">${clientMarkHtml(r, r.cells[0].value)}</span>
+        <span class="client-mark" data-client-slot="${ri}">${clientMarkHtml(r)}</span>
         <span class="spacer"></span>
         ${nChanged ? `<button type="button" data-changed-copy="${ri}" title="每行一格 列名与新值以制表符分隔">复制改动格</button>` : ''}
         <button type="button" data-row-copy="${ri}">复制整行</button>
+        <span class="sub-prompt">${esc(promptHead(r.cells.find(c => c.name === 'User Prompt')?.value))}</span>
       </summary>
       <div class="sub-grid">${r.cells.map(c => {
         const isChanged = c.name in changed;
@@ -263,7 +296,7 @@ async function openSubmission() {
         </div>`;
       }).join('')}</div>
     </details>`;
-  }).join('') || '<div class="empty-state"><div><b>没有可展示的题目</b>勾选左侧题目，或等题目标记完成后再打开</div></div>';
+  }).join('') || '<div class="empty-state"><div><b>没有可展示的题目</b>在题目列表勾选题目，或等题目标记完成后再看</div></div>';
   const B = $('#sub-body');
   B.querySelectorAll('[data-cell]').forEach(el => el.onclick = () => {
     copyText(el.dataset.cell);
@@ -284,17 +317,17 @@ async function openSubmission() {
     const changed = r.rework?.changed || {};
     copyText(r.cells.filter(c => c.name in changed).map(c => `${c.name}\t${tsvCell(c.value)}`).join('\n'));
   });
-  // 甲方提交标记：改完只刷新这一行的标记，不重绘弹窗（保持各行折叠状态）
+  // 甲方提交标记：改完只刷新这一行的标记，不重绘整页（保持各行折叠状态）
   const bindClientMark = slot => slot.querySelectorAll('[data-client-mark]').forEach(b => b.onclick = e => {
     e.preventDefault();
     e.stopPropagation();
     run(async () => {
       const r = data.rows[+slot.dataset.clientSlot];
-      const t = await editClientSeq(r.id, r.client_seq);
+      const t = await toggleClientSubmit(r.id, !!r.client_submit_time);
       if (!t) return;
       r.client_seq = t.client_seq;
       r.client_submit_time = t.client_submit_time;
-      slot.innerHTML = clientMarkHtml(r, r.cells[0].value);
+      slot.innerHTML = clientMarkHtml(r);
       bindClientMark(slot);
       loadList();
       if (current === r.id) showTask(r.id);
@@ -306,18 +339,16 @@ async function openSubmission() {
   $('#sub-copy-head').onclick = () => copyText(data.columns.join('\t'));
   $('#sub-xlsx').disabled = !data.rows.length;
   $('#sub-xlsx').onclick = () => run(() => downloadSubmission(ids));
-  $('#sub-modal').classList.remove('hidden');
-  document.body.classList.add('modal-open');
 }
 
-function closeSubmission() {
-  $('#sub-modal').classList.add('hidden');
-  document.body.classList.remove('modal-open');
-}
-$('#submission').onclick = () => run(openSubmission);
-$('#sub-close').onclick = closeSubmission;
-$('#sub-modal').onclick = e => { if (e.target.id === 'sub-modal') closeSubmission(); };
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#sub-modal').classList.contains('hidden')) closeSubmission(); });
+// 题目列表的「提交表」按钮：有勾选时直接看勾选的题，否则看全部已完成的
+$('#submission').onclick = () => {
+  subScope = checkedIds().length ? 'checked' : 'all';
+  showTab('submission');
+};
+$('#sub-scope-all').onclick = () => { subScope = 'all'; run(loadSubmission); };
+$('#sub-scope-checked').onclick = () => { subScope = 'checked'; run(loadSubmission); };
+$('#sub-refresh').onclick = () => run(loadSubmission);
 
 // ---------- 录屏文件 ----------
 async function loadRecordings(t) {
@@ -374,14 +405,14 @@ function inspOpen(t, i, isLast) {
   return saved !== null ? saved === '1' : isLast;
 }
 
-// 这一轮在提交表里要改的列：只列列名，新旧内容到提交表弹窗里看
+// 这一轮在提交表里要改的列：只列列名，新旧内容到提交表页里看
 function changedColumnsHtml(i, isLast, S) {
   if (i.state === '返修中' && !i.summary) return '<div class="plain empty">AI 处理完后列出</div>';
   const cols = i.changed_columns || [];
   const recordHint = isLast && S === '待录屏' ? '<div class="muted hint">运行录屏一格要等重新录屏并标记完成后才会更新</div>' : '';
   return (cols.length ? `<div class="chip-stack">${cols.map(c => `<span class="chip human">${esc(c)}</span>`).join('')}</div>`
     : '<div class="plain empty">提交表没有要改的格</div>') +
-    '<div class="muted hint">新旧内容在提交表弹窗里看 改过的格会高亮</div>' + recordHint;
+    '<div class="muted hint">新旧内容在提交表页里看 改过的格会高亮</div>' + recordHint;
 }
 
 function inspectPanel(t) {
@@ -445,8 +476,10 @@ async function showTask(id) {
     if (!t.auto_pause) actions.push(btn('重试', 'retry', 'primary'));
     if (['待做题', '待收集'].includes(t.failed_from)) actions.push(btn('重做', 'redo', 'danger'));
   }
-  // 已编号的题可标记甲方提交（填写甲方序号）
-  if (t.seq) actions.push(btn(t.client_seq ? '改甲方序号' : '标记甲方已提交', 'client_submit'));
+  // 甲方序号随时可改或补填；有甲方序号且已完成的题可标记甲方提交，已标记的可取消
+  actions.push(btn(t.client_seq ? '改甲方序号' : '填写甲方序号', 'client_seq', 'ghost'));
+  if (t.client_submit_time) actions.push(btn('取消甲方提交标记', 'client_submit', 'ghost'));
+  else if (t.client_seq && ['已完成', '待返修'].includes(S)) actions.push(btn('标记甲方已提交', 'client_submit'));
   // 自动做题：未接管的未完成题可以交给自动，已接管的可以转人工
   if (t.auto_run && !t.auto_pause) actions.push(btn('转人工', 'auto_release', 'ghost', 'title="退出自动流程 之后按手动流程处理"'));
   else if (!['已完成', '待返修'].includes(S)) actions.push(btn('交给自动', 'auto_join', 'ghost', 'title="由自动做题调度器接着推进这道题"'));
@@ -479,12 +512,12 @@ async function showTask(id) {
   $('#detail').innerHTML = `
     <div class="detail-head">
       <div class="title-row">
-        <span class="seq">${t.seq ? '#' + esc(t.seq) : '未编号'}</span>
+        <span class="seq" title="甲方序号">${t.client_seq ? '#' + esc(t.client_seq) : '未编号'}</span>
         <h2>${esc(t.branch)}</h2>
         <span class="chip ${statusClass(S)}">${esc(S)}</span>
         ${t.due_flag ? `<span class="chip due">${esc(t.due_flag)}</span>` : ''}${t.busy ? '<span class="chip busy">运行中</span>' : ''}
-        ${t.client_seq ? `<span class="chip ok" title="已在甲方平台提交 ${esc(t.client_submit_time || '')}">甲方 #${esc(t.client_seq)}</span>`
-          : t.seq ? '<span class="chip">甲方未提交</span>' : ''}
+        ${t.client_submit_time ? `<span class="chip ok" title="已在甲方平台提交 ${esc(t.client_submit_time)}">甲方已提交</span>`
+          : ['已完成', '待返修'].includes(S) ? '<span class="chip">甲方未提交</span>' : ''}
         ${S === '待录屏' && t.record_ready ? '<span class="chip ok">录屏环境已就绪</span>' : ''}
         ${t.auto_run ? '<span class="chip auto" title="由自动做题调度器推进">自动</span>' : ''}
       </div>
@@ -649,13 +682,17 @@ async function doAction(t, act, idx) {
   if (act === 'prepare_record' && t.record_ready &&
       !confirm('录屏环境已准备过，重新准备会删除录屏目录后重新克隆（目录里装的依赖、生成的文件都会清掉），确定？')) return;
   if (act === 'client_submit') {
+    if (await toggleClientSubmit(id, !!t.client_submit_time)) { await loadList(); await showTask(id); }
+    return;
+  }
+  if (act === 'client_seq') {
     if (await editClientSeq(id, t.client_seq)) { await loadList(); await showTask(id); }
     return;
   }
   if (act === 'complete') {
     body.recording_link = val('recording_link');
     if (!body.recording_link) throw new Error('请先选定录屏文件');
-    if (!confirm(`确认录屏文件：\n${body.recording_link}\n\n标记完成后会分配提交表序号`)) return;
+    if (!confirm(`确认录屏文件：\n${body.recording_link}`)) return;
   }
   const r = await api(`/api/tasks/${id}/action/${act}`, { method: 'POST', body });
   if (r.run_key) openLog(r.run_key, `${t.branch} ${act}`);
@@ -814,13 +851,35 @@ function fillDomains() {
     (META.domains[domain] || []).map(s => `<option>${esc(s)}</option>`).join('');
 }
 
+// 甲方序号预览：与后端同样的写法（逗号、空格分隔，支持 12100-12107 区间），只用于提示数量，校验以后端为准
+function previewClientSeqs(text) {
+  const out = [];
+  const src = String(text || '').trim().replace(/\s*[-~～—–]\s*/g, '-');
+  for (const tok of src.split(/[,，、;；\s]+/).filter(Boolean)) {
+    const m = /^#?(\d+)(?:-#?(\d+))?$/.exec(tok);
+    if (!m) return { error: `格式不对：${tok}` };
+    const a = +m[1], b = +(m[2] || m[1]);
+    if (a <= 0 || b < a) return { error: `序号无效：${tok}` };
+    if (out.length + b - a + 1 > 10) return { error: '一次最多 10 个甲方序号' };
+    for (let n = a; n <= b; n++) out.push(String(n));
+  }
+  return { seqs: out };
+}
+$('#gen-seqs').oninput = e => {
+  const p = previewClientSeqs(e.target.value);
+  $('#gen-seqs-hint').textContent = p.error ? p.error
+    : p.seqs.length ? `将出 ${p.seqs.length} 道题：${p.seqs.join('、')}` : '逗号或空格分隔，连续的写成区间；入库的题按顺序分配这些序号';
+};
+
 $('#gen-form').onsubmit = e => {
   e.preventDefault();
   run(async () => {
     const body = Object.fromEntries(new FormData(e.target));
-    body.count = +body.count;
     const r = await api('/api/gen', { method: 'POST', body });
     openLog(r.run_key, '批量出题');
+    // 这批序号已交给本次出题，清空输入避免重复提交
+    $('#gen-seqs').value = '';
+    $('#gen-seqs').oninput({ target: $('#gen-seqs') });
     loadGenRuns();
   });
 };
@@ -855,7 +914,6 @@ const CONFIG_FIELDS = [
   ['verify_root', '验收目录根'],
   ['record_root', '录屏目录根'],
   ['recording_dir', '录屏文件目录（WSL 路径，自动取其中最新的 mp4）'],
-  ['seq_base', '提交表已有最大序号（新完成的题目从下一个号开始）', 'number'],
   ['pool_gen_count', '补充题目池每轮出题数（1 到 10）', 'number'],
   ['auto_backlog_max', '自动做题后段积压上限（验收 查验 录屏阶段的自动题达到该数量就暂不取新题）', 'number'],
   ['do_ready_timeout_sec', '等待 Claude Code 就绪（秒）', 'number'],
@@ -967,6 +1025,8 @@ function renderPoolCard() {
       ${g.last_run ? `<div><button type="button" data-log="${esc(g.last_run)}">查看出错日志</button></div>` : ''}` : ''}`;
   $('#pool-btn').onclick = () => run(async () => {
     const action = st === 'running' ? 'stop' : 'start';
+    // 自动出题还不能分配甲方序号，暂停使用（正在运行的仍可停止）
+    if (action === 'start') return toast('补充题目池暂停使用：自动出题还不能分配甲方序号，请用下方批量出题', true);
     autoState = await api('/api/auto/gen', { method: 'POST', body: { action } });
     toast(action === 'start' ? '已开始补充题目池' : '当前这轮出题结束后停止');
     renderPoolCard();

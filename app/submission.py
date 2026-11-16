@@ -47,7 +47,8 @@ def _s(v) -> str:
 def row(t: dict) -> list[dict]:
     """一道题在提交表中的一行，按列顺序返回 {name, value, wide}。"""
     vals = {
-        '序号': t['seq'], '分支': t['branch'], 'User Prompt': t['user_prompt'],
+        # 序号即甲方序号（出题时分配）
+        '序号': t['client_seq'], '分支': t['branch'], 'User Prompt': t['user_prompt'],
         '所属领域': t['domain'], '子方向': t['subdomain'], '任务类型': t['task_type'],
         '任务难度': t['difficulty'], '语言/框架': normalize_lang(t['lang_framework']), 'Harness': t['harness'],
         'Harness 版本': t['harness_version'], '操作系统': t['os'],

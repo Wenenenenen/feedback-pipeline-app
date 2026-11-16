@@ -75,14 +75,23 @@ def put_config(body: dict = Body(...)):
 
 # ---------- 题目 ----------
 
+def client_seq_key(t: dict) -> int:
+    """甲方序号排序用的数值（出题时分配，均为数字）。"""
+    s = t.get('client_seq') or ''
+    return int(s) if s.isdigit() else 0
+
+
 @app.get('/api/tasks')
 def list_tasks(status: str | None = None):
     out = []
-    for t in db.list_tasks(status):
+    # 按甲方序号从大到小排列，没有甲方序号的题排在最后（按创建先后倒序）
+    tasks = sorted(db.list_tasks(status), key=lambda t: (not t.get('client_seq'), -client_seq_key(t), -t['id']))
+    for t in tasks:
         v = P.view(t)
         out.append({k: v.get(k) for k in (
-            'id', 'seq', 'branch', 'domain', 'subdomain', 'difficulty', 'status', 'failed_from',
-            'done_time', 'due_flag', 'update_time', 'busy', 'last_error', 'client_seq', 'auto_run')})
+            'id', 'branch', 'domain', 'subdomain', 'difficulty', 'status', 'failed_from',
+            'done_time', 'due_flag', 'update_time', 'busy', 'last_error', 'client_seq', 'client_submit_time',
+            'auto_run')})
         out[-1]['auto_paused'] = bool(t.get('auto_pause'))
     return out
 
@@ -133,6 +142,9 @@ def delete_task(task_id: int):
 
 @app.post('/api/gen')
 def gen(body: dict = Body(...)):
+    """批量出题：必须先给出这批题目的甲方序号，题目数量取序号个数。"""
+    if not P.parse_client_seqs(body.get('client_seqs')):
+        raise P.ActionError('请填写这批题目可用的甲方序号')
     return {'run_key': P.start_gen(body)}
 
 
@@ -151,8 +163,10 @@ ACTIONS = {
     'retry': lambda i, b: P.retry(i, b.get('summary', '')),
     # 返修：粘贴质检原文，AI 直接处理
     'rework': lambda i, b: P.start_rework_from_text(i, b.get('text', '')),
-    # 标记已在甲方平台提交，记下甲方序号（留空取消）
-    'client_submit': lambda i, b: P.mark_client_submit(i, b.get('client_seq', '')),
+    # 标记或取消已在甲方平台提交（submitted 为 false 时取消）
+    'client_submit': lambda i, b: P.mark_client_submit(i, bool(b.get('submitted', True))),
+    # 修改或补填甲方序号（留空清除）
+    'client_seq': lambda i, b: P.set_client_seq(i, b.get('client_seq', '')),
     # 自动做题：停下后重试（录屏环节可丢弃缓存的录屏脚本重新生成）、转人工、交给自动
     'auto_retry': lambda i, b: autopilot.retry(i, bool(b.get('regen_script'))),
     'auto_release': lambda i, b: autopilot.release(i),
@@ -170,7 +184,7 @@ def action(task_id: int, name: str, body: dict = Body(default={})):
     if name in NO_BUSY_ACTIONS and task_id in jobs.busy_tasks():
         raise P.ActionError('该题目已有任务在运行')
     # 人工执行原有操作时清除自动流程的停下状态，自动流程从新状态接着走
-    if not name.startswith('auto_') and name != 'client_submit':
+    if not name.startswith('auto_') and name not in ('client_submit', 'client_seq'):
         autopilot.clear_pause(task_id)
     r = fn(task_id, body or {})
     return {'run_key': r} if isinstance(r, str) else {'ok': True}
@@ -200,7 +214,8 @@ def auto_gen(body: dict = Body(...)):
     """补充题目池：start 开始不停出题，stop 在本轮出题结束后停止。"""
     act = body.get('action')
     if act == 'start':
-        autopilot.gen_loop.start()
+        # 自动出题还不能分配甲方序号，暂停使用；已在运行的仍可停止
+        raise P.ActionError('补充题目池暂停使用：自动出题还不能分配甲方序号，请到下方批量出题')
     elif act == 'stop':
         autopilot.gen_loop.stop()
     else:
@@ -255,15 +270,15 @@ def stop_run(run_key: str):
 # ---------- 提交表与录屏文件 ----------
 
 def _submission_tasks(body: dict | None) -> list[dict]:
-    """提交表的题目范围：勾选了题目时取勾选的，否则取全部已完成的；已编号的按序号排在前面。"""
+    """提交表的题目范围：勾选了题目时取勾选的，否则取全部已完成的；按甲方序号从小到大，没有甲方序号的排在最后。"""
     ids = [int(x) for x in (body or {}).get('ids') or []]
     tasks = [db.get_task(i) for i in ids] if ids else db.list_tasks(P.S_DONE)
-    return sorted((t for t in tasks if t), key=lambda t: (t['seq'] is None, t['seq'] or 0, t['id']))
+    return sorted((t for t in tasks if t), key=lambda t: (not t.get('client_seq'), client_seq_key(t), t['id']))
 
 
 @app.post('/api/submission/xlsx')
 def submission_xlsx(body: dict = Body(default={})):
-    """按与提交表弹窗相同的范围导出 xlsx，列顺序同提交表。"""
+    """按与提交表页相同的范围导出 xlsx，列顺序同提交表。"""
     tasks = _submission_tasks(body)
     if not tasks:
         raise HTTPException(400, '没有可导出的题目')

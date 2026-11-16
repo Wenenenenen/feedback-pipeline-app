@@ -71,8 +71,8 @@ def port_range(t: dict) -> tuple[int, int]:
 
 def due_flag(t: dict) -> str:
     """当天 20:00 前完成的题当天必须提交，20:00 后完成的题次日提交。"""
-    # 已编号的题已经提交过（返修中的题同样如此），不再提示提交日
-    if not t.get('done_time') or t['status'] == S_DONE or t.get('seq'):
+    # 已标记甲方提交的题（返修中的题同样如此）不再提示提交日
+    if not t.get('done_time') or t['status'] == S_DONE or t.get('client_submit_time'):
         return ''
     done = dt.datetime.strptime(t['done_time'], '%Y-%m-%d %H:%M:%S')
     due = done.date() if done.hour < 20 else done.date() + dt.timedelta(days=1)
@@ -159,12 +159,53 @@ def _unique_branch(name: str) -> str:
     return b
 
 
+# 甲方序号的一项：单个数字，或 12100-12107 这样的连续区间（可带前导 #）
+_CLIENT_SEQ_ITEM = re.compile(r'^#?(\d+)(?:-#?(\d+))?$')
+MAX_GEN_COUNT = 10
+
+
+def parse_client_seqs(text) -> list[str]:
+    """解析一批甲方序号：逗号、顿号、分号、空白分隔，支持连续区间；返回去掉前导零的数字串，保持填写顺序。"""
+    if isinstance(text, (list, tuple)):
+        text = ','.join(str(x) for x in text)
+    # 区间两侧的空格与各种连字符统一成 -
+    text = re.sub(r'\s*[-~～—–]\s*', '-', str(text or '').strip())
+    out: list[str] = []
+    for tok in re.split(r'[,，、;；\s]+', text):
+        if not tok:
+            continue
+        m = _CLIENT_SEQ_ITEM.match(tok)
+        if not m:
+            raise ActionError(f'甲方序号格式不对：{tok}（只能填数字，连续的可写成 12100-12107）')
+        a, b = int(m.group(1)), int(m.group(2) or m.group(1))
+        if a <= 0 or b < a:
+            raise ActionError(f'甲方序号无效：{tok}')
+        if len(out) + b - a + 1 > MAX_GEN_COUNT:
+            raise ActionError(f'一次最多 {MAX_GEN_COUNT} 个甲方序号')
+        out += [str(n) for n in range(a, b + 1)]
+    dup = sorted({s for s in out if out.count(s) > 1}, key=int)
+    if dup:
+        raise ActionError('甲方序号重复：' + '、'.join(dup))
+    return out
+
+
+def _seq_taken_text(used: dict[str, str]) -> str:
+    return '；'.join(f'{s} 已分配给 {b}' for s, b in used.items())
+
+
 def start_gen(params: dict) -> str:
+    """出题；传了 client_seqs 时题目数量取序号个数，入库的题按顺序分配这批甲方序号。"""
     if params.get('domain') not in DOMAINS:
         raise ActionError('所属领域无效')
+    seqs = parse_client_seqs(params.get('client_seqs'))
+    if seqs:
+        used = db.used_client_seqs(seqs)
+        if used:
+            raise ActionError('甲方序号已被占用：' + _seq_taken_text(used))
+        params['count'] = len(seqs)
     count = int(params.get('count') or 1)
-    if not 1 <= count <= 10:
-        raise ActionError('数量需在 1 到 10 之间')
+    if not 1 <= count <= MAX_GEN_COUNT:
+        raise ActionError(f'数量需在 1 到 {MAX_GEN_COUNT} 之间')
     params['count'] = count
     if params.get('difficulty') not in (None, '', '困难', '地狱'):
         raise ActionError('难度只能是困难或地狱')
@@ -183,8 +224,15 @@ def start_gen(params: dict) -> str:
                 log(f"跳过不合规题目 {it.get('branch')}：子方向 {it['subdomain']} 不属于 {it['domain']}")
                 continue
             mats = [{**m, 'state': 'pending', 'note': ''} for m in it['materials']]
+            # 按入库顺序分配甲方序号；出题期间被别的题占用的不再分配，留给人工在详情里补填
+            seq = seqs[n] if n < len(seqs) else None
+            taken = db.used_client_seqs([seq]) if seq else {}
+            if taken:
+                log(f"甲方序号 {_seq_taken_text(taken)}，{it.get('branch')} 未分配甲方序号")
+                seq = None
             db.insert_task({
                 'branch': _unique_branch(it['branch']), 'status': S_INIT, 'gen_run_id': run_key,
+                'client_seq': seq,
                 'user_prompt': it['user_prompt'], 'domain': it['domain'],
                 'subdomain': it['subdomain'], 'task_type': '功能开发',
                 'difficulty': it['difficulty'],
@@ -194,8 +242,12 @@ def start_gen(params: dict) -> str:
                 'similarity_note': it['similarity_note'], 'harness': 'Claude Code', 'os': OS_LINUX,
                 'voided_sessions': [],
             })
+            if seqs:
+                log(f"{it.get('branch')} 甲方序号 {seq or '未分配'}")
             n += 1
         log(f'入库 {n} 道题')
+        if seqs[n:]:
+            log('未用上的甲方序号 ' + '、'.join(seqs[n:]))
 
     return jobs.submit('qa-gen', None, work, ai=True)
 
@@ -598,29 +650,39 @@ def complete(task_id: int, recording_link: str) -> dict:
         raise ActionError('缺少收集环节留存的轨迹文件')
     # 完成时清掉之前失败留下的报错（如自动录屏失败后重试成功）
     fields = {'recording_link': recording_link.strip(), 'status': S_DONE, 'failed_from': None, 'last_error': None}
-    # 完成时编号，接续提交表已有的最大序号
-    if not t.get('seq'):
-        fields['seq'] = max(int(config.load()['seq_base'] or 0), db.max_seq()) + 1
-    # 返修后重新录屏完成，本轮质检随之处理完毕（序号沿用原来的）
+    # 返修后重新录屏完成，本轮质检随之处理完毕（甲方序号沿用原来的）
     insp = db.open_inspection(task_id)
     if insp:
         db.update_inspection(insp['id'], state=I_DONE, resolved_time=db.now())
     return db.update_task(task_id, **fields)
 
 
-def mark_client_submit(task_id: int, client_seq: str) -> dict:
-    """标记已在甲方平台提交并记下甲方序号；序号留空即取消标记。"""
+def mark_client_submit(task_id: int, submitted: bool) -> dict:
+    """标记或取消「已在甲方平台提交」；甲方序号出题时已分配，这里只记提交时间。"""
     t = need(db.get_task(task_id))
-    if not t.get('seq'):
-        raise ActionError('标记完成分配序号后才能标记甲方提交')
-    client_seq = (client_seq or '').strip().lstrip('#').strip()
-    if not client_seq:
-        return db.update_task(task_id, client_seq=None, client_submit_time=None)
-    if len(client_seq) > 64:
-        raise ActionError('甲方序号过长')
-    # 改序号时保留首次标记的时间
-    return db.update_task(task_id, client_seq=client_seq,
-                          client_submit_time=t.get('client_submit_time') or db.now())
+    if not submitted:
+        return db.update_task(task_id, client_submit_time=None)
+    if not t.get('client_seq'):
+        raise ActionError('这道题还没有甲方序号，先点「改甲方序号」填写')
+    if t['status'] not in (S_DONE, S_REWORK) and not t.get('client_submit_time'):
+        raise ActionError('标记完成后才能标记甲方提交')
+    # 重复标记时保留首次标记的时间
+    return db.update_task(task_id, client_submit_time=t.get('client_submit_time') or db.now())
+
+
+def set_client_seq(task_id: int, text: str) -> dict:
+    """修改或补填一道题的甲方序号；留空即清除（已标记甲方提交的题不能清除）。"""
+    t = need(db.get_task(task_id))
+    seqs = parse_client_seqs(text)
+    if len(seqs) > 1:
+        raise ActionError('一道题只能填一个甲方序号')
+    seq = seqs[0] if seqs else None
+    if not seq and t.get('client_submit_time'):
+        raise ActionError('已标记甲方提交的题不能清空甲方序号，先取消提交标记')
+    used = {s: b for s, b in db.used_client_seqs(seqs).items() if b != t['branch']}
+    if used:
+        raise ActionError('甲方序号已被占用：' + _seq_taken_text(used))
+    return db.update_task(task_id, client_seq=seq)
 
 
 # ---------- 质检登记与返修 ----------

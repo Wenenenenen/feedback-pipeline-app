@@ -5,7 +5,6 @@
 -- 题目表：一道题从出题到导出的全部字段
 CREATE TABLE IF NOT EXISTS qa_task (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,  -- 主键
-    seq                 INTEGER,                            -- 提交表序号（首次导出时分配）
     branch              VARCHAR(64) NOT NULL,               -- 分支名（项目短名，库内唯一）
     status              VARCHAR(16) NOT NULL,               -- 当前状态
     failed_from         VARCHAR(16),                        -- 失败前所处状态（用于重试）
@@ -50,7 +49,7 @@ CREATE TABLE IF NOT EXISTS qa_task (
     record_prep         TEXT,                               -- 录屏前准备与录完收尾的命令，不录（JSON 对象 setup cleanup）
     record_ready_sha    VARCHAR(40),                        -- 录屏环境已准备的产物快照 SHA（与当前产物快照一致才算就绪）
     record_ready_time   TIMESTAMP,                          -- 录屏环境准备完成时间
-    client_seq          VARCHAR(64),                        -- 甲方平台的序号（为空表示尚未在甲方平台提交）
+    client_seq          VARCHAR(64),                        -- 甲方序号（出题时分配，也是提交表的序号；未删除的题目中唯一）
     client_submit_time  TIMESTAMP,                          -- 标记已在甲方平台提交的时间
     review_self_check   TEXT,                               -- 验收自检结果（JSON）
     review_comment      TEXT,                               -- 打回意见
@@ -67,6 +66,7 @@ CREATE TABLE IF NOT EXISTS qa_task (
     tenant_id           BIGINT NOT NULL DEFAULT 0           -- 租户编号
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uk_qa_task_branch ON qa_task(branch) WHERE deleted = 0;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_qa_task_client_seq ON qa_task(client_seq) WHERE deleted = 0 AND client_seq IS NOT NULL;
 
 -- 运行记录表：每次自动环节（AI 或脚本）的一次执行
 CREATE TABLE IF NOT EXISTS qa_run (

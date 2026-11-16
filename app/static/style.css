@@ -344,26 +344,23 @@ details.fold[open] > summary { border-bottom: 1px solid var(--line); margin: 0; 
 .rec-info .chip { justify-self: start; }
 .rec-meta { display: flex; flex-wrap: wrap; gap: 6px 14px; font: 12px var(--mono); color: var(--muted); }
 
-/* ---------- 提交表弹窗 ---------- */
-body.modal-open { overflow: hidden; }
-.modal {
-  position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 24px 16px;
-  background: rgba(28, 29, 33, .55); backdrop-filter: blur(2px);
+/* ---------- 提交表页 ---------- */
+.sub-page { max-width: 1680px; margin: 0 auto; }
+/* 工具栏吸顶，页面随窗口整体纵向滚动 */
+.sub-head {
+  position: sticky; top: var(--header-h); z-index: 3;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 12px 18px;
+  background: var(--surface); border: 1px solid var(--line); border-top: 3px solid var(--primary);
+  border-radius: var(--radius); box-shadow: var(--shadow);
 }
-.modal-box {
-  /* 高度固定，折叠展开时弹窗不跟着变高变矮 */
-  width: min(1680px, 100%); height: calc(100vh - 48px); display: flex; flex-direction: column;
-  background: var(--bg); border-radius: var(--radius); box-shadow: 0 30px 80px -20px rgba(0, 0, 0, .5);
-  border-top: 4px solid var(--primary); overflow: hidden; animation: rise .2s ease;
-}
-.modal-head {
-  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 14px 20px;
-  background: var(--surface); border-bottom: 1px solid var(--line);
-}
-.modal-head h3 { margin: 0; font-size: 16px; letter-spacing: .06em; color: var(--ink); }
-.modal-head .spacer { flex: 1; }
+.sub-head h3 { margin: 0; font-size: 16px; letter-spacing: .06em; color: var(--ink); }
+.sub-head .spacer { flex: 1; }
+/* 范围切换：两个按钮拼成一组，当前范围高亮 */
+.seg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--sunken); border: 1px solid var(--line); }
+.seg button { padding: 4px 10px; font-size: 12px; }
+.seg button.active { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: var(--shadow); }
 /* 只允许纵向滚动，内容一律换行 */
-.modal-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 20px 22px; display: grid; gap: 16px; align-content: start; }
+.sub-body { overflow-x: hidden; padding: 16px 0 22px; display: grid; gap: 16px; align-content: start; }
 .sub-row { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
 /* 行标题即折叠开关，左侧箭头指示展开状态 */
 .sub-row-head {
@@ -438,3 +435,9 @@ details.sub-row[open] > .sub-row-head { border-bottom: 1px dashed var(--line); b
 .pool-row .spacer { flex: 1; }
 .pool-stat { display: inline-flex; align-items: baseline; gap: 6px; }
 .pool-stat b { font: 700 26px var(--mono); color: var(--ink); }
+/* 提交表折叠行：User Prompt 第一句单独占一行，展开后不再显示（完整内容在单元格里） */
+.sub-row-head .sub-prompt {
+  flex-basis: 100%; padding-left: 18px; font-size: 12px; color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+details.sub-row[open] > .sub-row-head .sub-prompt { display: none; }

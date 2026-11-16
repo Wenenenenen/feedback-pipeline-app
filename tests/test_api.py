@@ -145,18 +145,15 @@ def test_wrong_state(client):
     assert r.status_code == 400 and '不能执行' in r.json()['detail']
 
 
-def test_complete_requires_recording_and_numbers(client):
-    """完成需要录屏文件与收集时留存的轨迹，完成时接续已有最大序号编号。"""
-    client.put('/api/config', json={'seq_base': 10})
-    tid = new_task(status=pipeline.S_RECORD, trajectory_path='/data/t.jsonl')
+def test_complete_requires_recording(client):
+    """完成需要录屏文件与收集时留存的轨迹，甲方序号保持出题时分配的值。"""
+    tid = new_task(status=pipeline.S_RECORD, trajectory_path='/data/t.jsonl', client_seq='12100')
     assert client.post(f'/api/tasks/{tid}/action/complete', json={}).status_code == 400
     rec = 'E:\\GSB-Recordings\\2026-11-13 22-52-36.mp4'
     r = client.post(f'/api/tasks/{tid}/action/complete', json={'recording_link': rec})
     t = db.get_task(tid)
-    assert r.status_code == 200 and t['status'] == pipeline.S_DONE and t['seq'] == 11
-    tid2 = new_task(branch='demo2', status=pipeline.S_RECORD, trajectory_path='/data/t2.jsonl')
-    client.post(f'/api/tasks/{tid2}/action/complete', json={'recording_link': rec})
-    assert db.get_task(tid2)['seq'] == 12
+    assert r.status_code == 200 and t['status'] == pipeline.S_DONE and t['client_seq'] == '12100'
+    assert 'seq' not in t
     # 没有轨迹文件不能完成
     tid3 = new_task(branch='demo3', status=pipeline.S_RECORD)
     r = client.post(f'/api/tasks/{tid3}/action/complete', json={'recording_link': rec})
@@ -167,7 +164,7 @@ def test_submission_rows(client):
     """提交表按列顺序给出取值；未勾选时只列已完成题目；轨迹文件取收集留存的轨迹。"""
     from app import submission
     client.put('/api/config', json={'github_repo': 'git@github.com:org/repo.git'})
-    done = new_task(branch='done-task', status=pipeline.S_DONE, seq=11, init_sha='a' * 40,
+    done = new_task(branch='done-task', status=pipeline.S_DONE, client_seq='11', init_sha='a' * 40,
                     trajectory_path='/data/t.jsonl', recording_link='E:\\r\\a.mp4', delivery_score=3)
     other = new_task(branch='check-task', status=pipeline.S_CHECK)
     body = client.post('/api/submission', json={}).json()
@@ -182,9 +179,10 @@ def test_submission_rows(client):
     copies = {c['name']: c.get('copy') for c in body['rows'][0]['cells']}
     assert copies['轨迹文件'] == '\\\\wsl.localhost\\Ubuntu-24.04\\data\\'
     assert copies['运行录屏'] == 'E:\\r\\' and copies['分支'] is None
-    # 勾选时按勾选的题目返回，已编号的排在前面
-    body = client.post('/api/submission', json={'ids': [other, done]}).json()
-    assert [r['branch'] for r in body['rows']] == ['done-task', 'check-task']
+    # 勾选时按勾选的题目返回，按甲方序号数值从小到大，没有甲方序号的排在最后
+    big = new_task(branch='big-seq', status=pipeline.S_DONE, client_seq='9')
+    body = client.post('/api/submission', json={'ids': [other, done, big]}).json()
+    assert [r['branch'] for r in body['rows']] == ['big-seq', 'done-task', 'check-task']
 
 
 def test_submission_xlsx(client):
@@ -196,7 +194,7 @@ def test_submission_xlsx(client):
     client.put('/api/config', json={'github_repo': 'git@github.com:org/repo.git'})
     # 没有已完成的题目时不导出空表
     assert client.post('/api/submission/xlsx', json={}).status_code == 400
-    done = new_task(branch='done-task', status=pipeline.S_DONE, seq=11, init_sha='a' * 40,
+    done = new_task(branch='done-task', status=pipeline.S_DONE, client_seq='11', init_sha='a' * 40,
                     delivery_score=3, session_id='0123456789012345678', feedback='模型没跑测试 给3分')
     other = new_task(branch='check-task', status=pipeline.S_CHECK)
     r = client.post('/api/submission/xlsx', json={})
@@ -259,7 +257,7 @@ def test_gen_flow_with_fake_codex(client, monkeypatch):
             'env_requirements': {'toolchain': [], 'needs_gpu': False, 'gpu_note': '', 'external_urls': []},
             'remark': '0-1 开发。', 'similarity_note': '无相近题目'}]}
     monkeypatch.setattr(codex_runner, 'run_skill', fake)
-    key = client.post('/api/gen', json={'count': 1, 'domain': '游戏、图形与多媒体'}).json()['run_key']
+    key = client.post('/api/gen', json={'client_seqs': '12100', 'domain': '游戏、图形与多媒体'}).json()['run_key']
     import time
     for _ in range(50):
         if db.get_run(key)['status'] != 'running':
@@ -267,7 +265,7 @@ def test_gen_flow_with_fake_codex(client, monkeypatch):
         time.sleep(0.1)
     assert db.get_run(key)['status'] == 'success'
     t = db.find_task_by_branch('live-relay')
-    assert t and t['status'] == pipeline.S_INIT and t['os'] == 'MacOS/Linux'
+    assert t and t['status'] == pipeline.S_INIT and t['os'] == 'MacOS/Linux' and t['client_seq'] == '12100'
 
 
 def test_build_cmd():
@@ -472,7 +470,7 @@ def test_gen_skips_wrong_subdomain(client, monkeypatch):
             {**base, 'branch': 'bad-task', 'domain': '游戏、图形与多媒体', 'subdomain': '数据采集、爬虫与 RPA'},
             {**base, 'branch': 'off-domain', 'domain': '安全', 'subdomain': '其他'}]}
     monkeypatch.setattr(codex_runner, 'run_skill', fake)
-    key = client.post('/api/gen', json={'count': 3, 'domain': '游戏、图形与多媒体'}).json()['run_key']
+    key = client.post('/api/gen', json={'client_seqs': '12100-12102', 'domain': '游戏、图形与多媒体'}).json()['run_key']
     import time
     for _ in range(50):
         if db.get_run(key)['status'] != 'running':
@@ -481,10 +479,18 @@ def test_gen_skips_wrong_subdomain(client, monkeypatch):
     assert db.find_task_by_branch('ok-task') and not db.find_task_by_branch('bad-task')
     assert not db.find_task_by_branch('off-domain')
     assert f'runs\\{key}' in seen['text']
-    r = client.post('/api/gen', json={'count': 1, 'domain': '游戏、图形与多媒体', 'subdomain': '漏洞检测与攻防'})
+    # 题目数量取甲方序号个数；入库的题按顺序分配，没用上的序号记在日志里
+    assert '数量 3' in seen['text'] and db.find_task_by_branch('ok-task')['client_seq'] == '12100'
+    log = client.get(f'/api/runs/{key}/log').json()['text']
+    assert '未用上的甲方序号 12101、12102' in log
+    # 必须填甲方序号；已被占用的序号不能再用
+    assert '甲方序号' in client.post('/api/gen', json={'domain': '游戏、图形与多媒体'}).json()['detail']
+    r = client.post('/api/gen', json={'client_seqs': '12099-12100', 'domain': '游戏、图形与多媒体'})
+    assert r.status_code == 400 and '12100 已分配给 ok-task' in r.json()['detail']
+    r = client.post('/api/gen', json={'client_seqs': '12200', 'domain': '游戏、图形与多媒体', 'subdomain': '漏洞检测与攻防'})
     assert r.status_code == 400
     # 主领域以外的领域不再出题
-    assert client.post('/api/gen', json={'count': 1, 'domain': '数据工程'}).status_code == 400
+    assert client.post('/api/gen', json={'client_seqs': '12200', 'domain': '数据工程'}).status_code == 400
 
 
 def test_edit_rejects_wrong_subdomain(client):
@@ -536,7 +542,7 @@ def wait_run(key):
 
 
 def done_task(**kw):
-    f = dict(status=pipeline.S_DONE, seq=11, feedback=GOOD_FEEDBACK, delivery_score=2,
+    f = dict(status=pipeline.S_DONE, client_seq='11', feedback=GOOD_FEEDBACK, delivery_score=2,
              score_reason='核心功能白屏', reproducibility='无外部依赖', artifact_sha='b' * 40,
              init_sha='a' * 40, recording_link='E:\\r\\a.mp4', trajectory_path='/data/t.jsonl',
              record_steps=[{'action': '启动', 'command': 'npm start', 'expect': '白屏'}])
@@ -645,13 +651,13 @@ def test_rework_flow_with_fake_codex(client, monkeypatch):
     assert '原轨第12行' in seen['text'] and '修复目录' in seen['text'] and GOOD_FEEDBACK in seen['text']
     t = db.get_task(tid)
     assert t['status'] == pipeline.S_DONE and t['feedback'] == NEW_FB
-    assert t['seq'] == 11 and t['recording_link'] == 'E:\\r\\a.mp4'
+    assert t['client_seq'] == '11' and t['recording_link'] == 'E:\\r\\a.mp4'
     i = db.list_inspections(tid)[0]
     assert i['state'] == pipeline.I_DONE and i['summary'].startswith('删掉了') and i['need_record'] == 0
     d = client.get(f'/api/tasks/{tid}').json()
     assert d['inspections'][0]['changed_columns'] == ['Feedback']
     # 提交表弹窗：返修过的题带轮次与改过的格（列名到原值），没返修过的为空
-    done_task(branch='plain', seq=12)
+    done_task(branch='plain', client_seq='12')
     rows = {r['branch']: r for r in client.post('/api/submission', json={}).json()['rows']}
     assert rows['demo']['rework'] == {'round': 1, 'state': pipeline.I_DONE, 'changed': {'Feedback': GOOD_FEEDBACK}}
     assert rows['plain']['rework'] is None
@@ -674,7 +680,7 @@ def test_rework_artifact_changed_needs_record(client, monkeypatch):
     rec = 'E:\\r\\b.mp4'
     assert client.post(f'/api/tasks/{tid}/action/complete', json={'recording_link': rec}).status_code == 200
     t = db.get_task(tid)
-    assert t['status'] == pipeline.S_DONE and t['seq'] == 11
+    assert t['status'] == pipeline.S_DONE and t['client_seq'] == '11'
     assert db.list_inspections(tid)[0]['state'] == pipeline.I_DONE
 
 
@@ -771,21 +777,95 @@ def test_prepare_record_marks_ready(client, tmp_path, monkeypatch):
 
 
 def test_client_submit_mark(client):
-    """已编号的题可标记甲方提交并填写甲方序号，列表与提交表都带上；留空取消。"""
-    tid = new_task(status=pipeline.S_DONE, seq=11)
-    other = new_task(branch='no-seq', status=pipeline.S_RECORD)
-    r = client.post(f'/api/tasks/{other}/action/client_submit', json={'client_seq': '88'})
-    assert r.status_code == 400 and '序号' in r.json()['detail']
-    assert client.post(f'/api/tasks/{tid}/action/client_submit', json={'client_seq': ' #1234 '}).status_code == 200
+    """有甲方序号且已完成的题可标记甲方提交，列表与提交表都带上；可取消。"""
+    tid = new_task(status=pipeline.S_DONE, client_seq='1234')
+    no_seq = new_task(branch='no-seq', status=pipeline.S_DONE)
+    r = client.post(f'/api/tasks/{no_seq}/action/client_submit', json={'submitted': True})
+    assert r.status_code == 400 and '甲方序号' in r.json()['detail']
+    # 未完成的题不能标记
+    doing = new_task(branch='doing', status=pipeline.S_RECORD, client_seq='1240')
+    r = client.post(f'/api/tasks/{doing}/action/client_submit', json={'submitted': True})
+    assert r.status_code == 400 and '标记完成' in r.json()['detail']
+    assert client.post(f'/api/tasks/{tid}/action/client_submit', json={'submitted': True}).status_code == 200
     t = db.get_task(tid)
     assert t['client_seq'] == '1234' and t['client_submit_time']
     first = t['client_submit_time']
-    row = client.post('/api/submission', json={}).json()['rows'][0]
+    row = client.post('/api/submission', json={'ids': [tid]}).json()['rows'][0]
     assert row['client_seq'] == '1234' and row['client_submit_time'] == first
-    assert {x['id']: x['client_seq'] for x in client.get('/api/tasks').json()}[tid] == '1234'
-    # 改序号保留首次标记时间，留空即取消
-    client.post(f'/api/tasks/{tid}/action/client_submit', json={'client_seq': '1235'})
-    assert db.get_task(tid)['client_seq'] == '1235' and db.get_task(tid)['client_submit_time'] == first
-    client.post(f'/api/tasks/{tid}/action/client_submit', json={'client_seq': ''})
+    item = {x['id']: x for x in client.get('/api/tasks').json()}[tid]
+    assert item['client_seq'] == '1234' and item['client_submit_time'] == first
+    # 重复标记保留首次时间；已标记的不能清空甲方序号
+    client.post(f'/api/tasks/{tid}/action/client_submit', json={'submitted': True})
+    assert db.get_task(tid)['client_submit_time'] == first
+    r = client.post(f'/api/tasks/{tid}/action/client_seq', json={'client_seq': ''})
+    assert r.status_code == 400 and '取消提交标记' in r.json()['detail']
+    client.post(f'/api/tasks/{tid}/action/client_submit', json={'submitted': False})
     t = db.get_task(tid)
-    assert t['client_seq'] is None and t['client_submit_time'] is None
+    assert t['client_seq'] == '1234' and t['client_submit_time'] is None
+
+
+def test_client_seq_edit(client):
+    """详情里修改或补填甲方序号：去掉前导 # 与前导零，不能与其他题重复，只能填一个，留空清除。"""
+    tid = new_task(client_seq='12100')
+    other = new_task(branch='other')
+    assert client.post(f'/api/tasks/{other}/action/client_seq', json={'client_seq': ' #012101 '}).status_code == 200
+    assert db.get_task(other)['client_seq'] == '12101'
+    r = client.post(f'/api/tasks/{other}/action/client_seq', json={'client_seq': '12100'})
+    assert r.status_code == 400 and 'demo' in r.json()['detail']
+    r = client.post(f'/api/tasks/{other}/action/client_seq', json={'client_seq': '12102-12103'})
+    assert r.status_code == 400 and '只能填一个' in r.json()['detail']
+    assert client.post(f'/api/tasks/{other}/action/client_seq', json={'client_seq': 'abc'}).status_code == 400
+    # 改成自己当前的序号不算占用
+    assert client.post(f'/api/tasks/{tid}/action/client_seq', json={'client_seq': '12100'}).status_code == 200
+    client.post(f'/api/tasks/{other}/action/client_seq', json={'client_seq': ''})
+    assert db.get_task(other)['client_seq'] is None
+    # 删除的题释放序号
+    db.delete_task(tid)
+    assert client.post(f'/api/tasks/{other}/action/client_seq', json={'client_seq': '12100'}).status_code == 200
+
+
+def test_task_list_sorted_by_client_seq(client):
+    """题目列表按甲方序号数值从大到小，没有甲方序号的排在最后。"""
+    new_task(branch='s9', client_seq='9')
+    new_task(branch='s12100', client_seq='12100')
+    new_task(branch='none')
+    new_task(branch='s100', client_seq='100')
+    assert [x['branch'] for x in client.get('/api/tasks').json()] == ['s12100', 's100', 's9', 'none']
+    assert 'seq' not in client.get('/api/tasks').json()[0]
+
+
+def test_parse_client_seqs():
+    """甲方序号批量写法：逗号、顿号、空白分隔，区间展开，保持填写顺序。"""
+    assert pipeline.parse_client_seqs('12100-12103') == ['12100', '12101', '12102', '12103']
+    assert pipeline.parse_client_seqs('#12105，12100、12102 ~ 12103\n12110') == [
+        '12105', '12100', '12102', '12103', '12110']
+    assert pipeline.parse_client_seqs(['12100', 12101]) == ['12100', '12101']
+    assert pipeline.parse_client_seqs('') == [] and pipeline.parse_client_seqs(None) == []
+    for bad, msg in (('12100,12100', '重复'), ('12100-12099', '无效'), ('12100-12110', '最多'),
+                     ('a12', '格式'), ('0', '无效'), ('12100-12101, 12101', '重复')):
+        with pytest.raises(pipeline.ActionError, match=msg):
+            pipeline.parse_client_seqs(bad)
+
+
+def test_migrate_drops_seq(data_dir):
+    """存量库补执行 007：去掉自编序号列，甲方序号保留并在未删除的题目中唯一。"""
+    import sqlite3
+    c = db.conn()
+    assert 'seq' not in {r[1] for r in c.execute('PRAGMA table_info(qa_task)')}
+    # 模拟只执行到 006 的存量库
+    c.execute('DROP INDEX uk_qa_task_client_seq')
+    c.execute('ALTER TABLE qa_task ADD COLUMN seq INTEGER')
+    c.execute("DELETE FROM schema_version WHERE script = '007_client_seq.sql'")
+    c.commit()
+    tid = new_task(seq=11, client_seq='5600')
+    db.reset_for_test()
+    c = sqlite3.connect(db.db_path())
+    db.migrate(c)
+    assert 'seq' not in {r[1] for r in c.execute('PRAGMA table_info(qa_task)')}
+    assert c.execute('SELECT client_seq FROM qa_task WHERE id = ?', (tid,)).fetchone()[0] == '5600'
+    c.close()
+    db.reset_for_test()
+    with pytest.raises(Exception, match='UNIQUE'):
+        new_task(branch='dup', client_seq='5600')
+    db.delete_task(tid)
+    assert new_task(branch='reuse', client_seq='5600')
