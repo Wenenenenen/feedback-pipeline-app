@@ -36,8 +36,8 @@ except Exception:
 names = {"gen": "补充题目池", "do": "自动做题"}
 for k, n in names.items():
     st = (s.get(k) or {}).get("state")
-    if st in ("running", "stopping"):
-        print("  %s  %s" % (n, "运行中" if st == "running" else "停止中"))
+    if st in ("running", "stopping", "finishing"):
+        print("  %s  %s" % (n, {"running": "运行中", "stopping": "停止中", "finishing": "做完当前题后停止"}[st]))
 ' 2>/dev/null)"
   if [ -n "$AUTO" ]; then
     RUNNING="$RUNNING${RUNNING:+

@@ -210,10 +210,13 @@ def auto_gen(body: dict = Body(...)):
 
 @app.post('/api/auto/do')
 def auto_do(body: dict = Body(...)):
-    """自动做题：start 开始调度，stop 不再取新题、不再启动下一环节（在跑的环节跑完为止）。"""
+    """自动做题：start 开始调度；finish 做完当前题后停止（不再取新题，已接管的题走完或停下后关闭）；
+    stop 不再取新题、不再启动下一环节（在跑的环节跑完为止）。"""
     act = body.get('action')
     if act == 'start':
         autopilot.do_loop.start()
+    elif act == 'finish':
+        autopilot.do_loop.finish()
     elif act == 'stop':
         autopilot.do_loop.stop()
     else:

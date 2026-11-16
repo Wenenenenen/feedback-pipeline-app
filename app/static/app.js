@@ -677,7 +677,7 @@ function autoPauseHtml(t) {
     <ul class="ap-hints">${(p.hints || []).map(h => `<li>${esc(h)}</li>`).join('')}</ul>
     <div class="ap-actions">${p.run_key ? `<button type="button" class="ghost" data-log="${esc(p.run_key)}">查看日志</button>` : ''}
       ${btn('重试', 'auto_retry', 'primary')}${regen}${btn('转人工', 'auto_release', 'ghost')}
-      ${autoState.do?.state === 'running' ? '' : '<span class="muted">自动做题未开启 重试后要开启才会接着推进</span>'}</div>
+      ${['running', 'finishing'].includes(autoState.do?.state) ? '' : '<span class="muted">自动做题未开启 重试后要开启才会接着推进</span>'}</div>
   </div>`;
 }
 
@@ -913,24 +913,32 @@ function renderAutoBar() {
   const st = d.state || 'idle';
   const front = (d.front || [])[0];
   const paused = (d.paused || []).length;
-  const label = st === 'running' ? '停止做题' : st === 'stopping' ? '停止中…' : '开始做题';
-  const title = st === 'running' ? '不再取新题 不再启动下一环节 在跑的环节跑完为止'
-    : '从题目池按顺序取题 自动准备环境 做题 收集 验收 查验 录屏';
+  // 按钮随运行方式变化：未开启只有开始；运行中可选做完当前题后停止或立即停止；做完当前题后停止时可恢复取题
+  const B = {
+    start: `<button type="button" class="primary" data-auto-do="start" title="从题目池按顺序取题 自动准备环境 做题 收集 验收 查验 录屏">开始做题</button>`,
+    resume: `<button type="button" class="ghost" data-auto-do="start" title="恢复从题目池取新题">继续取题</button>`,
+    finish: `<button type="button" data-auto-do="finish" title="不再取新题 已接管的题继续走完所有环节 全部完成或停下后自动关闭">做完当前题后停止</button>`,
+    stop: `<button type="button" class="danger" data-auto-do="stop" title="不再取新题 不再启动下一环节 正在跑的环节跑完就关闭 已接管的题停在当前状态">停止做题</button>`,
+    stopping: '<button type="button" disabled>停止中…</button>',
+  };
+  const buttons = { idle: [B.start], running: [B.finish, B.stop],
+    finishing: ['<span class="chip human">做完当前题后停止</span>', B.resume, B.stop], stopping: [B.stopping] }[st] || [B.start];
   $('#auto-bar').innerHTML = `
-    <button type="button" id="auto-do-btn" class="${st === 'running' ? 'danger' : 'primary'}" ${st === 'stopping' ? 'disabled' : ''} title="${title}">${label}</button>
+    ${buttons.join('')}
     ${st !== 'idle' || front || paused ? `<span class="auto-sum">
       ${front ? `<a href="#" data-goto="${front.id}" title="做题线当前的题">${esc(front.branch)} ${esc(front.status)}</a>` : '<span class="muted">做题线空闲</span>'}
       <span title="验收 查验 录屏阶段的自动题 / 积压上限">后段 ${(d.backlog || []).length}/${esc(d.backlog_max ?? '-')}</span>
       ${paused ? `<a href="#" class="bad" data-paused="1" title="只看自动流程停下待处理的题">需处理 ${paused}</a>` : ''}
       <span class="muted" title="待初始化且未被接管的题">池 ${esc(d.pool ?? 0)}</span>
       ${d.error ? `<span class="bad" title="${esc(d.error)}">调度出错</span>` : ''}</span>` : ''}`;
-  $('#auto-do-btn').onclick = () => run(async () => {
-    const action = autoState.do?.state === 'running' ? 'stop' : 'start';
+  const DO_TOAST = { start: '已开始自动做题', finish: '不再取新题 已接管的题走完后自动停止', stop: '已停止取新题 在跑的环节跑完为止' };
+  $('#auto-bar').querySelectorAll('[data-auto-do]').forEach(b => b.onclick = () => run(async () => {
+    const action = b.dataset.autoDo;
     autoState = await api('/api/auto/do', { method: 'POST', body: { action } });
-    toast(action === 'start' ? '已开始自动做题' : '已停止取新题 在跑的环节跑完为止');
+    toast(DO_TOAST[action]);
     renderAutoBar();
     loadList();
-  });
+  }));
   $('#auto-bar').querySelectorAll('[data-goto]').forEach(a => a.onclick = e => { e.preventDefault(); run(() => showTask(+a.dataset.goto)); });
   $('#auto-bar').querySelectorAll('[data-paused]').forEach(a => a.onclick = e => {
     e.preventDefault();

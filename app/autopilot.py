@@ -9,6 +9,10 @@
 - 验收受 AI 并发上限约束，录屏同时只录 1 道；
 - 做题线空闲且后段（待验收、待查验、待录屏）积压少于配置的上限时，从题目池按 id 顺序取下一道。
 任一环节出错，题目停下（auto_pause 记下环节、原因、处理建议与出错运行），不影响其他题继续推进。
+
+两种关闭方式：
+- 做完当前题后停止：不再取新题，已接管的题继续走完所有环节，全部完成或停下后自动关闭；
+- 停止：不再取新题、不再启动下一环节，正在跑的环节跑完就关闭，已接管的题停在当前状态。
 """
 import threading
 import time
@@ -165,49 +169,81 @@ class GenLoop:
 class DoLoop:
     """自动做题调度器：后台线程每隔几秒推进一次所有接管的题。"""
 
+    # 三种运行方式：
+    #   running    正常推进已接管的题，并按规则从题目池取新题
+    #   finishing  做完当前题后停止：不再取新题，已接管的题继续走完所有环节，全部完成或停下后自动关闭
+    #   stopping   停止：不再取新题、不再启动下一环节，正在跑的环节跑完就关闭
+    ACTIVE = ('running', 'finishing', 'stopping')
+
     def __init__(self):
         self.lock = threading.Lock()
-        self.state = 'idle'          # idle / running / stopping
+        self.state = 'idle'
         self.error = ''
         self.started_at = None
-        self._stop = threading.Event()
 
-    def start(self) -> dict:
-        with self.lock:
-            if self.state in ('running', 'stopping'):
-                raise P.ActionError('自动做题已在运行')
+    def _check_tools(self):
         missing = [i for i in envcheck.auto_tools_check(bool(config.load().get('record_audio'))) if not i['ok']]
         if missing:
             raise P.ActionError('自动做题需要的工具缺失：' +
                                 '；'.join(f"{i['name']}（{i['fix']}）" for i in missing))
+
+    def _launch(self, mode: str) -> dict:
+        """未开启时检查工具后启动后台线程；已开启时只切换运行方式（线程每轮按当前方式推进）。"""
         with self.lock:
-            self.state, self.error, self.started_at = 'running', '', db.now()
-            self._stop.clear()
+            if self.state in self.ACTIVE:
+                self.state = mode
+                return status()
+        self._check_tools()
+        with self.lock:
+            if self.state in self.ACTIVE:
+                self.state = mode
+                return status()
+            self.state, self.error, self.started_at = mode, '', db.now()
         threading.Thread(target=self._loop, daemon=True, name='do-loop').start()
         return status()
 
-    def stop(self) -> dict:
+    def start(self) -> dict:
+        """开始做题；做完当前题后停止、停止中时点开始，恢复为正常取题。"""
         with self.lock:
             if self.state == 'running':
+                raise P.ActionError('自动做题已在运行')
+        return self._launch('running')
+
+    def finish(self) -> dict:
+        """做完当前题后停止；未开启时直接以这种方式开启，只推进已接管的题。"""
+        return self._launch('finishing')
+
+    def stop(self) -> dict:
+        with self.lock:
+            if self.state in ('running', 'finishing'):
                 self.state = 'stopping'
-                self._stop.set()
         return status()
 
     def _loop(self):
         while True:
+            with self.lock:
+                mode = self.state
             try:
-                if self._stop.is_set():
+                if mode == 'stopping':
                     # 停止后不再启动新环节，等已在跑的自动任务结束
                     if not auto_busy():
                         break
                 else:
-                    tick()
+                    tick(pick=mode == 'running')
+                    # 做完当前题后停止：已接管的题都完成（已释放）或停下，且没有在跑的任务时关闭
+                    if mode == 'finishing' and not unfinished() and not auto_busy():
+                        break
             except Exception as e:  # noqa: BLE001 单次推进出错不终止调度
                 with self.lock:
                     self.error = f'{e}'[:500]
             time.sleep(TICK_SEC)
         with self.lock:
             self.state = 'idle'
+
+
+def unfinished() -> list[dict]:
+    """已接管且没停下的题（完成的题在推进时已释放接管标记）。"""
+    return [t for t in auto_tasks() if not t.get('auto_pause')]
 
 
 def auto_tasks() -> list[dict]:
@@ -261,14 +297,16 @@ def advance(t: dict, busy: set[int], recording: bool) -> bool:
     return False
 
 
-def tick():
-    """推进一次：先推进已接管的题，再按规则从题目池取新题。"""
+def tick(pick: bool = True):
+    """推进一次：先推进已接管的题，再按规则从题目池取新题（pick 为 False 时不取新题）。"""
     cfg = config.load()
     busy = jobs.busy_tasks()
     tasks = auto_tasks()
     recording = any(t['status'] == P.S_RECORD and t['id'] in busy for t in tasks)
     for t in tasks:
         recording = advance(t, busy, recording) or recording
+    if not pick:
+        return
     tasks = auto_tasks()
     front = [t for t in tasks if stage(t) in FRONT]
     backlog = [t for t in tasks if stage(t) in BACK]

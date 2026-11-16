@@ -178,6 +178,74 @@ def test_tick_picks_in_order_and_keeps_one_in_front(data_dir, fake_steps):
     assert ('start_review', a) in fake_steps and ('start_prepare', b) in fake_steps
 
 
+def test_tick_without_pick(data_dir, fake_steps):
+    pool = new_task()
+    autopilot.tick(pick=False)
+    assert db.get_task(pool)['auto_run'] == 0 and fake_steps == []
+
+
+@pytest.fixture()
+def fast_loop(monkeypatch, fake_steps):
+    """调度线程每轮间隔缩短，工具检查直接通过。"""
+    from app import envcheck
+    monkeypatch.setattr(autopilot, 'TICK_SEC', 0.05)
+    monkeypatch.setattr(envcheck, 'auto_tools_check', lambda audio: [])
+    return fake_steps
+
+
+def test_finish_mode_completes_current_then_stops(data_dir, fast_loop):
+    """做完当前题后停止：不取新题，已接管的题继续推进，完成后自动关闭。"""
+    cur = new_task(status=P.S_REVIEW, auto_run=1)
+    pool = new_task()
+    loop = autopilot.DoLoop()
+    loop.finish()
+    assert loop.state == 'finishing'
+    assert wait(lambda: ('start_review', cur) in fast_loop)
+    time.sleep(0.2)
+    assert loop.state == 'finishing' and db.get_task(pool)['auto_run'] == 0
+    # 当前题走完：推进时释放接管标记，随后调度关闭
+    db.update_task(cur, status=P.S_DONE)
+    assert wait(lambda: loop.state == 'idle')
+    assert db.get_task(cur)['auto_run'] == 0 and db.get_task(pool)['auto_run'] == 0
+
+
+def test_finish_mode_stops_when_remaining_paused(data_dir, fast_loop):
+    cur = new_task(status=P.S_FAIL, failed_from=P.S_COLLECT, auto_run=1, last_error='collect：轨迹校验不通过')
+    loop = autopilot.DoLoop()
+    loop.finish()
+    # 失败的题被停下后，没有未完成的题，调度关闭；停下的题保留接管标记待处理
+    assert wait(lambda: loop.state == 'idle')
+    t = db.get_task(cur)
+    assert t['auto_pause'] and t['auto_run'] == 1
+
+
+def test_mode_switches(data_dir, fast_loop):
+    new_task(status=P.S_REVIEW, auto_run=1)
+    loop = autopilot.DoLoop()
+    loop.start()
+    with pytest.raises(P.ActionError):
+        loop.start()
+    loop.finish()
+    assert loop.state == 'finishing'
+    # 做完当前题后停止时点开始，恢复正常取题
+    loop.start()
+    assert loop.state == 'running'
+    loop.stop()
+    assert loop.state == 'stopping'
+    assert wait(lambda: loop.state == 'idle')
+
+
+def test_auto_do_finish_api(client, monkeypatch):
+    from app import envcheck
+    monkeypatch.setattr(envcheck, 'auto_tools_check', lambda audio: [])
+    started = threading.Event()
+    monkeypatch.setattr(autopilot.do_loop, '_loop', lambda: started.set())
+    r = client.post('/api/auto/do', json={'action': 'finish'}).json()
+    assert r['do']['state'] == 'finishing' and started.wait(2)
+    assert client.post('/api/auto/do', json={'action': 'stop'}).json()['do']['state'] == 'stopping'
+    autopilot.do_loop.state = 'idle'
+
+
 def test_tick_respects_backlog(data_dir, fake_steps):
     for _ in range(2):
         new_task(status=P.S_REVIEW, auto_run=1)
