@@ -10,7 +10,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import config, db, jobs, pipeline as P, submission
+from . import autopilot, claude_driver, config, db, jobs, pipeline as P, submission
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -82,7 +82,8 @@ def list_tasks(status: str | None = None):
         v = P.view(t)
         out.append({k: v.get(k) for k in (
             'id', 'seq', 'branch', 'domain', 'subdomain', 'difficulty', 'status', 'failed_from',
-            'done_time', 'due_flag', 'update_time', 'busy', 'last_error', 'client_seq')})
+            'done_time', 'due_flag', 'update_time', 'busy', 'last_error', 'client_seq', 'auto_run')})
+        out[-1]['auto_paused'] = bool(t.get('auto_pause'))
     return out
 
 
@@ -97,6 +98,8 @@ def get_task(task_id: int):
     v['runs'] = db.list_runs(task_id, 20)
     # 质检与返修：历次质检记录，每轮附上改动过的提交表列名
     v['inspections'] = P.inspections_view(t)
+    # 自动做题：做题会话的只读观看命令（只有自动做题时存在会话）
+    v['do_attach'] = claude_driver.attach_command(task_id)
     return v
 
 
@@ -150,7 +153,13 @@ ACTIONS = {
     'rework': lambda i, b: P.start_rework_from_text(i, b.get('text', '')),
     # 标记已在甲方平台提交，记下甲方序号（留空取消）
     'client_submit': lambda i, b: P.mark_client_submit(i, b.get('client_seq', '')),
+    # 自动做题：停下后重试（录屏环节可丢弃缓存的录屏脚本重新生成）、转人工、交给自动
+    'auto_retry': lambda i, b: autopilot.retry(i, bool(b.get('regen_script'))),
+    'auto_release': lambda i, b: autopilot.release(i),
+    'auto_join': lambda i, b: autopilot.join(i),
 }
+# 只改状态、不启动后台任务的人工操作：题目有任务在运行时不允许（避免和自动做题抢状态）
+NO_BUSY_ACTIONS = {'mark_done', 'approve', 'reject', 'complete'}
 
 
 @app.post('/api/tasks/{task_id}/action/{name}')
@@ -158,6 +167,11 @@ def action(task_id: int, name: str, body: dict = Body(default={})):
     fn = ACTIONS.get(name)
     if not fn:
         raise HTTPException(404, '未知操作')
+    if name in NO_BUSY_ACTIONS and task_id in jobs.busy_tasks():
+        raise P.ActionError('该题目已有任务在运行')
+    # 人工执行原有操作时清除自动流程的停下状态，自动流程从新状态接着走
+    if not name.startswith('auto_') and name != 'client_submit':
+        autopilot.clear_pause(task_id)
     r = fn(task_id, body or {})
     return {'run_key': r} if isinstance(r, str) else {'ok': True}
 
@@ -172,6 +186,39 @@ def review_input(task_id: int):
 def rework_input(task_id: int):
     """预览传给 qa-rework 的输入文本（调试用）。"""
     return {'text': P.describe_input('qa-rework', task_id)}
+
+
+# ---------- 全自动 ----------
+
+@app.get('/api/auto')
+def auto_status():
+    return autopilot.status()
+
+
+@app.post('/api/auto/gen')
+def auto_gen(body: dict = Body(...)):
+    """补充题目池：start 开始不停出题，stop 在本轮出题结束后停止。"""
+    act = body.get('action')
+    if act == 'start':
+        autopilot.gen_loop.start()
+    elif act == 'stop':
+        autopilot.gen_loop.stop()
+    else:
+        raise HTTPException(400, '未知操作')
+    return autopilot.status()
+
+
+@app.post('/api/auto/do')
+def auto_do(body: dict = Body(...)):
+    """自动做题：start 开始调度，stop 不再取新题、不再启动下一环节（在跑的环节跑完为止）。"""
+    act = body.get('action')
+    if act == 'start':
+        autopilot.do_loop.start()
+    elif act == 'stop':
+        autopilot.do_loop.stop()
+    else:
+        raise HTTPException(400, '未知操作')
+    return autopilot.status()
 
 
 # ---------- 运行记录 ----------

@@ -56,6 +56,9 @@ CREATE TABLE IF NOT EXISTS qa_task (
     review_comment      TEXT,                               -- 打回意见
     remark              TEXT,                               -- 备注
     last_error          TEXT,                               -- 最近一次失败原因
+    auto_run            SMALLINT NOT NULL DEFAULT 0,        -- 是否由自动做题接管（1 接管，0 人工）
+    auto_pause          TEXT,                               -- 自动流程停下待处理的信息（JSON：环节、原因、处理建议、出错运行），为空表示未停下
+    record_script       TEXT,                               -- 自动录屏脚本缓存（JSON：产物快照、录屏步骤摘要、脚本、预计时长）
     creator             VARCHAR(64),                        -- 创建者
     create_time         TIMESTAMP NOT NULL,                 -- 创建时间
     updater             VARCHAR(64),                        -- 更新者

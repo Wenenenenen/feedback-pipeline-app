@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """后台任务：线程池执行、AI 环节全局并发上限、同一题目互斥、日志落盘。"""
+import contextlib
 import datetime as dt
 import threading
 import traceback
@@ -8,7 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from . import config, db
 
-_pool = ThreadPoolExecutor(max_workers=8)
+# 自动做题会让做题、等待并发名额的任务长时间占着线程，线程数留足余量
+_pool = ThreadPoolExecutor(max_workers=16)
 _task_locks: set[int] = set()
 _locks_guard = threading.Lock()
 _ai_sem_size = None
@@ -27,6 +29,18 @@ def _ai_semaphore() -> threading.BoundedSemaphore:
     if _ai_sem is None or n != _ai_sem_size:
         _ai_sem, _ai_sem_size = threading.BoundedSemaphore(n), n
     return _ai_sem
+
+
+@contextlib.contextmanager
+def ai_slot(log):
+    """只在任务中调用 AI 的那一段占用并发名额（如自动录屏生成脚本），其余步骤不占。"""
+    sem = _ai_semaphore()
+    log('等待并发名额')
+    sem.acquire()
+    try:
+        yield
+    finally:
+        sem.release()
 
 
 def new_run_key(kind: str) -> str:

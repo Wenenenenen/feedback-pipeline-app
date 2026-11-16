@@ -139,3 +139,49 @@ def net_check(urls: list[str], timeout: int = 20) -> list[dict]:
         items.append({'name': url, 'ok': ok, 'detail': f'{status or "失败"}（{cost}s）',
                       'fix': note})
     return items
+
+
+# ---------- 自动做题与自动录屏用到的工具 ----------
+
+# (名称, 检查命令, 安装方式)；检查命令在交互式 bash 中执行，nvm 安装的 node 才可见
+DO_TOOLS = [
+    ('tmux', 'command -v tmux', 'sudo apt-get install -y tmux'),
+    ('claude', 'command -v claude', '按作业要求在 WSL 中安装 Claude Code'),
+]
+RECORD_TOOLS = [
+    ('Xvfb', 'command -v Xvfb', 'sudo apt-get install -y xvfb'),
+    ('xterm', 'command -v xterm', 'sudo apt-get install -y xterm'),
+    ('xdotool', 'command -v xdotool', 'sudo apt-get install -y xdotool'),
+    ('ffmpeg', 'command -v ffmpeg', 'sudo apt-get install -y ffmpeg'),
+    ('node', 'command -v node', '用 nvm 安装 node'),
+    ('playwright', 'test -d "$(npm root -g)/playwright"', 'bash scripts/setup-verify-tools.sh'),
+    ('chromium', 'ls -d ~/.cache/ms-playwright/chromium-* >/dev/null 2>&1', 'npx playwright install chromium'),
+    ('中文字体', 'test "$(fc-list :lang=zh 2>/dev/null | wc -l)" -gt 0', 'sudo apt-get install -y fonts-noto-cjk'),
+]
+AUDIO_TOOLS = [
+    ('pulseaudio', 'command -v pulseaudio', 'sudo apt-get install -y pulseaudio（或在配置页关闭录制声音）'),
+]
+
+
+def tools_check(tools: list[tuple[str, str, str]]) -> list[dict]:
+    """一次 bash 调用检查一组工具，逐项给出是否可用与安装方式。"""
+    if not tools:
+        return []
+    script = '; '.join(f'if {cmd}; then echo "{i}=1"; else echo "{i}=0"; fi' for i, (_, cmd, _) in enumerate(tools))
+    _, out = _bash(script, timeout=60)
+    ok = {}
+    for line in out.splitlines():
+        k, sep, v = line.strip().partition('=')
+        if sep and k.isdigit():
+            ok[int(k)] = v == '1'
+    return [_item(name, ok.get(i, False), '可用' if ok.get(i) else '缺失', fix)
+            for i, (name, _, fix) in enumerate(tools)]
+
+
+def auto_tools_check(audio: bool) -> list[dict]:
+    """开始自动做题前的检查：做题与录屏需要的工具。"""
+    return tools_check(DO_TOOLS + RECORD_TOOLS + (AUDIO_TOOLS if audio else []))
+
+
+def record_tools_missing(audio: bool) -> list[str]:
+    return [i['name'] for i in tools_check(RECORD_TOOLS + (AUDIO_TOOLS if audio else [])) if not i['ok']]

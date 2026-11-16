@@ -24,8 +24,8 @@
 | Node.js | WSL 中用 nvm 安装（`bash -ic` 能找到 `node`） | WSL 中 `bash -ic 'node -v'` |
 | 做题客户端 | WSL 中安装 Claude Code（`bash -ic` 能找到 `claude`），并按作业要求配置：`~/.claude/settings.json` 的 env 含 `CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000`、`DISABLE_COMPACT=1`、`ANTHROPIC_BETAS` 含 `context-1m-2025-08-07`；不放全局 CLAUDE.md、rules、skills、agents、commands、插件、hooks、MCP | 页面「环境检查」会逐项体检 |
 | Codex | Windows 中安装 Codex CLI（如 `npm i -g @openai/codex`），用 ChatGPT 账号登录（`codex login`），或用 CC Switch 等工具配置第三方供应商（见下面配置里的「沿用 config.toml 的供应商与模型」） | Windows 中 `codex login status`；第三方供应商以冒烟为准 |
-| 验收工具 | WSL 中的 ffmpeg、playwright + chromium | 运行下面的 `setup-verify-tools.sh` |
-| 录屏软件 | 输出 mp4 到固定目录（默认 `E:\GSB-Recordings`） | — |
+| 验收与自动化工具 | WSL 中的 ffmpeg、playwright + chromium；自动做题与自动录屏另需 tmux、xvfb、pulseaudio、fonts-noto-cjk、xterm、xdotool、x11-xserver-utils | 运行下面的 `setup-verify-tools.sh`；点「开始做题」时也会检查 |
+| 录屏软件 | 人工录屏时输出 mp4 到固定目录（默认 `E:\GSB-Recordings`）；自动录屏直接写到这个目录 | — |
 
 ### 2. 克隆与启动
 
@@ -37,7 +37,7 @@ git clone git@github.com:Wenenenenen/feedback-pipeline-app.git E:\WorkSpace\jian
 pwsh -File E:\WorkSpace\jianzhi\feedback-pipeline-app\scripts\start-detached.ps1
 ```
 
-在 WSL 中安装验收工具（需要 sudo 密码，只需一次）：
+在 WSL 中安装验收与自动化工具（需要 sudo 密码，只需一次）：
 
 ```bash
 bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/setup-verify-tools.sh
@@ -101,6 +101,14 @@ bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/start.sh
 8. **录屏**：「准备录屏环境」得到干净克隆，按录屏步骤录制；页面自动取录屏目录中最新的 mp4，核对时长与分辨率后标记完成，此时按配置的已有最大序号接续编号。
 9. **提交表**：列表上方点「提交表」弹窗查看勾选题目（未勾选时为全部已完成题目）的提交表各列，单元格点击即复制，也可整行复制后粘贴到表格。语言/框架列统一为不带版本号、英文逗号分隔的写法（如 `java,python,nodejs`）。
 10. **质检返修**：质检不通过的数据直接放弃。待返修的，在已完成题目的「质检与返修」卡片粘贴质检原文（开头为【AI质检｜待返修】），点「AI 返修」，后台调用 `codex exec '$qa-rework'` 按质检原文直接处理：改写 Feedback 等内容，需要时修改产物并推送新的产物快照。处理完，这一轮的卡片里列出提交表要改的列名；新旧内容到提交表弹窗里看，这道题标出「第N轮返修」，改过的格高亮（悬停看原值），也可点「复制改动格」。产物有改动或需要重录时题目回到待录屏，录完标记完成；否则直接回到已完成。序号保持不变。
+
+## 全自动
+
+- **补充题目池**：「批量出题」页顶部点「补充题目池」，后台一轮接一轮出题（每轮 10 题，子方向与难度由 AI 判断，偏好与补充要求为空），出完的题进入题目池（待初始化）。再点一次，等当前这轮出完就停；某轮出错即停，卡片里能打开出错日志。
+- **开始做题**：题目页工具栏点「开始做题」，从题目池按顺序取题，自动走：初始化并准备环境 → 在后台 tmux 里启动 WSL 的 Claude Code、粘贴 prompt 原文并等它做完 → 收集 → 验收 → 按规则查验 → 在 WSL 虚拟屏上后台录屏（`qa-record` 生成录屏脚本并试跑，Windows 样式指针真实移动点击 chromium 里的产物页面，Windows Terminal 配色的 xterm 里执行命令，ffmpeg 录 720p 带声音的 mp4）→ 标记完成。做题线同时 1 道，验收和录屏可以与下一道的做题重叠。再点「停止做题」不再取新题，在跑的环节跑完为止。
+- **观看**：做题时在 WSL 终端执行详情「做题」卡片里的 `tmux -L feedback attach -r -t fbdo-<id>` 只读观看（Ctrl+b 再按 d 退出）。录屏全程在虚拟屏里，不占本机桌面、鼠标键盘和音箱。
+- **出错时**：题目停下，列表标出「需处理」，详情顶部红框给出原因、处理建议和「查看日志」「重试」「转人工」（录屏环节另有「重新生成录屏脚本并重试」）。在详情里直接点原有按钮（继续准备、重做、通过、打回等）也会让自动流程从新状态接着走。任意未完成的题可点「交给自动」。
+- 后端重启后两个开关都回到未开启，重新点开始即可接着推进已接管的题；`scripts/stop.sh` 在开关开着时会列出并拒绝停止（`--force` 除外）。
 
 ## 测试
 

@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "properties": {
+    "script": { "type": "string" },
+    "est_seconds": { "type": "integer" },
+    "manual_needed": { "type": "boolean" },
+    "reason": { "type": "string" }
+  },
+  "required": ["script", "est_seconds", "manual_needed", "reason"],
+  "additionalProperties": false
+}

@@ -30,6 +30,7 @@
         <select id="status-filter"><option value="">全部状态</option></select>
         <button id="refresh" class="ghost">刷新</button>
         <span class="spacer"></span>
+        <span class="auto-bar" id="auto-bar"></span>
         <span class="count" id="task-count"></span>
         <button id="submission" class="primary" title="勾选题目时只看勾选的 否则看全部已完成的">提交表</button>
       </div>
@@ -44,6 +45,7 @@
   <!-- 批量出题 -->
   <section id="tab-gen" class="tab-body hidden">
     <div class="page">
+      <div class="card" id="pool-card"></div>
       <form id="gen-form" class="card">
         <h3>批量出题</h3>
         <div class="fields">

@@ -140,6 +140,45 @@ def list_sessions(claude_home: Path, cwd: str) -> list[str]:
     return [f.stem for f in pdir.glob('*.jsonl')] if pdir.is_dir() else []
 
 
+# 需要人回答才能继续的工具：做题时出现即说明模型在向人提问
+ASKING_TOOLS = {'AskUserQuestion', 'ExitPlanMode'}
+
+
+def turn_state(path: Path) -> str:
+    """自动做题用：根据轨迹判断当前这一轮的进度。
+
+    返回 running（仍在执行）、done（正常结束）、api_error（接口报错中断）、asking（等待人回答）。
+    一轮结束时 Claude Code 会在主链最后一条 assistant 之后写入 system/turn_duration 记录。
+    """
+    last = None          # 主链最后一条对话记录（user 或 assistant）
+    ended = False        # last 之后是否出现了本轮结束标记
+    answered = set()     # 已有工具结果的 tool_use id
+    for r in load_rows(path):
+        if r.get('isSidechain'):
+            continue
+        tp = r.get('type')
+        if tp in ('user', 'assistant'):
+            last, ended = r, False
+            if tp == 'user':
+                for x in (r.get('message') or {}).get('content') or []:
+                    if isinstance(x, dict) and x.get('type') == 'tool_result':
+                        answered.add(x.get('tool_use_id'))
+        elif tp == 'system' and r.get('subtype') == 'turn_duration':
+            ended = True
+    if not last or last.get('type') != 'assistant':
+        return 'running'
+    if last.get('isApiErrorMessage'):
+        return 'api_error'
+    msg = last.get('message') or {}
+    for x in msg.get('content') or []:
+        if (isinstance(x, dict) and x.get('type') == 'tool_use' and x.get('name') in ASKING_TOOLS
+                and x.get('id') not in answered):
+            return 'asking'
+    if ended and msg.get('stop_reason') in ('end_turn', 'stop_sequence', None):
+        return 'done'
+    return 'running'
+
+
 def validate(info: dict, prompt: str, expected_model: str | None,
              builtin_skills: list[str]) -> dict:
     """返回 {'errors': [...], 'continue_count': n}。"""

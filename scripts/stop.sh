@@ -26,6 +26,23 @@ for r in runs:
     if r.get("status") == "running":
         print("  %s  题目 %s  开始于 %s" % (r.get("run_key"), r.get("task_id") or "-", r.get("started_at")))
 ' 2>/dev/null)"
+  # 自动出题、自动做题开关开着时，停止后端会让它们停下（重启后需要重新点开始）
+  AUTO="$(curl -sf "http://127.0.0.1:$PORT/api/auto" | python3 -c '
+import json, sys
+try:
+    s = json.load(sys.stdin)
+except Exception:
+    s = {}
+names = {"gen": "补充题目池", "do": "自动做题"}
+for k, n in names.items():
+    st = (s.get(k) or {}).get("state")
+    if st in ("running", "stopping"):
+        print("  %s  %s" % (n, "运行中" if st == "running" else "停止中"))
+' 2>/dev/null)"
+  if [ -n "$AUTO" ]; then
+    RUNNING="$RUNNING${RUNNING:+
+}$AUTO"
+  fi
   if [ -n "$RUNNING" ]; then
     echo "以下任务正在运行，停止后端会中断它们（重启后记为失败，需要重新发起）："
     echo "$RUNNING"

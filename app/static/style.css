@@ -412,3 +412,29 @@ details.sub-row[open] > .sub-row-head { border-bottom: 1px dashed var(--line); b
 /* 提交表行标题里的甲方标记：标签与按钮紧挨 */
 .client-mark { display: inline-flex; align-items: center; gap: 4px; }
 .client-mark button { padding: 2px 8px; font-size: 12px; }
+
+/* ---------- 全自动 ---------- */
+/* 工具栏放了自动做题开关后可能放不下，允许折行 */
+.toolbar { flex-wrap: wrap; }
+.chip.auto, .badge.auto { background: var(--info-soft); color: var(--info); }
+.auto-bar { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.auto-sum { display: inline-flex; align-items: center; gap: 10px; font-size: 12px; white-space: nowrap; }
+.auto-sum .bad, .auto-sum a.bad { color: var(--danger); font-weight: 600; }
+/* 自动流程停下时的处理框 */
+.auto-pause {
+  margin-top: 12px; padding: 10px 12px; border-radius: 7px; background: var(--danger-soft);
+  border-left: 3px solid var(--danger); font-size: 13px;
+}
+.ap-head { display: flex; align-items: center; gap: 8px; color: var(--danger); }
+.ap-reason {
+  margin: 8px 0; max-height: 220px; overflow: auto; white-space: pre-wrap; word-break: break-all;
+  font: 12px/1.55 var(--mono); color: var(--text); background: var(--surface); padding: 8px 10px; border-radius: 6px;
+}
+.ap-hints-title { font-weight: 600; color: var(--ink); }
+.ap-hints { margin: 4px 0 8px; padding-left: 20px; color: var(--text); }
+.ap-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+/* 补充题目池卡片 */
+.pool-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 6px; }
+.pool-row .spacer { flex: 1; }
+.pool-stat { display: inline-flex; align-items: baseline; gap: 6px; }
+.pool-stat b { font: 700 26px var(--mono); color: var(--ink); }

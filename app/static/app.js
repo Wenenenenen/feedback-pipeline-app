@@ -147,7 +147,11 @@ document.querySelectorAll('.tab').forEach(b => b.onclick = () => {
 // ---------- 列表 ----------
 async function loadList() {
   const st = $('#status-filter').value;
-  const rows = await api('/api/tasks' + (st ? '?status=' + encodeURIComponent(st) : ''));
+  // 以 __ 开头的是自动做题的筛选，取全部后在页面上过滤
+  const special = st.startsWith('__');
+  let rows = await api('/api/tasks' + (st && !special ? '?status=' + encodeURIComponent(st) : ''));
+  if (st === '__auto') rows = rows.filter(t => t.auto_run);
+  if (st === '__paused') rows = rows.filter(t => t.auto_paused);
   const checked = new Set([...document.querySelectorAll('.row-check:checked')].map(x => +x.value));
   $('#task-count').textContent = `${rows.length} 题`;
   $('#task-table tbody').innerHTML = rows.map(t => `
@@ -158,6 +162,8 @@ async function loadList() {
       <td>${esc(t.difficulty)}</td>
       <td><div class="chip-stack"><span class="chip ${statusClass(t.status)}">${esc(t.status)}</span>
           ${t.busy ? '<span class="chip busy">运行中</span>' : ''}
+          ${t.auto_run ? '<span class="chip auto">自动</span>' : ''}
+          ${t.auto_paused ? '<span class="chip fail">需处理</span>' : ''}
           ${t.due_flag ? `<span class="chip due">${esc(t.due_flag)}</span>` : ''}</div></td>
       <td class="t-time">${esc(shortTime(t.update_time))}${t.done_time ? `<br>完成 ${esc(shortTime(t.done_time))}` : ''}</td>
     </tr>`).join('') || '<tr><td colspan="6" class="muted" style="text-align:center;padding:28px">暂无题目</td></tr>';
@@ -435,11 +441,15 @@ async function showTask(id) {
   if (S === '待录屏') actions.push(t.record_ready ? btn('重新准备录屏环境', 'prepare_record', 'ghost')
     : btn('准备录屏环境', 'prepare_record'), btn('标记完成', 'complete', 'primary'));
   if (S === '失败') {
-    actions.push(btn('重试', 'retry', 'primary'));
+    // 自动流程停下时重试按钮在停下处理框里，这里不重复
+    if (!t.auto_pause) actions.push(btn('重试', 'retry', 'primary'));
     if (['待做题', '待收集'].includes(t.failed_from)) actions.push(btn('重做', 'redo', 'danger'));
   }
   // 已编号的题可标记甲方提交（填写甲方序号）
   if (t.seq) actions.push(btn(t.client_seq ? '改甲方序号' : '标记甲方已提交', 'client_submit'));
+  // 自动做题：未接管的未完成题可以交给自动，已接管的可以转人工
+  if (t.auto_run && !t.auto_pause) actions.push(btn('转人工', 'auto_release', 'ghost', 'title="退出自动流程 之后按手动流程处理"'));
+  else if (!['已完成', '待返修'].includes(S)) actions.push(btn('交给自动', 'auto_join', 'ghost', 'title="由自动做题调度器接着推进这道题"'));
   actions.push(btn('删除题目', 'delete', 'danger push'));
   const recordReady = t.record_ready
     ? `<span class="chip ok">已就绪</span> <span class="muted">${esc(t.record_ready_time || '')} 产物快照 ${esc((t.artifact_sha || '').slice(0, 8))}</span>`
@@ -476,10 +486,12 @@ async function showTask(id) {
         ${t.client_seq ? `<span class="chip ok" title="已在甲方平台提交 ${esc(t.client_submit_time || '')}">甲方 #${esc(t.client_seq)}</span>`
           : t.seq ? '<span class="chip">甲方未提交</span>' : ''}
         ${S === '待录屏' && t.record_ready ? '<span class="chip ok">录屏环境已就绪</span>' : ''}
+        ${t.auto_run ? '<span class="chip auto" title="由自动做题调度器推进">自动</span>' : ''}
       </div>
       <div class="meta-line">${esc(t.domain)} / ${esc(t.subdomain)} · ${esc(t.difficulty)} · ${esc(t.lang_framework || '技术栈未定')}</div>
       ${stepper(t)}
-      ${t.last_error ? `<div class="error-box">${esc(t.last_error)}</div>` : ''}
+      ${autoPauseHtml(t)}
+      ${t.last_error && !t.auto_pause ? `<div class="error-box">${esc(t.last_error)}</div>` : ''}
       ${t.env_blockers?.length ? `<div class="error-box">需要人工处理 处理完点「继续准备」：\n${esc(t.env_blockers.join('\n'))}</div>` : ''}
       <div class="actions">${actions.join('')}
         <span class="fold-all"><button type="button" class="ghost" data-fold-all="1">全部展开</button><button type="button" class="ghost" data-fold-all="0">全部折叠</button></span></div>
@@ -515,6 +527,7 @@ async function showTask(id) {
 
     ${panel(t, 'do', '做题', `<div class="fields">
       ${field('做题命令', codeBlock(t.do_command))}
+      ${t.auto_run ? field('观看自动做题', `${codeBlock(t.do_attach)}<div class="muted hint">自动做题时 Claude Code 在后台 tmux 会话里运行 在 WSL 终端执行这条命令只读观看 按 Ctrl+b 再按 d 退出观看</div>`) : ''}
       ${field('Prompt', '<div><button data-copy-prompt="1">复制 prompt 原文</button></div>')}
       ${field('初始快照', link(t.init_permalink))}
       ${field('重做次数', plain(t.redo_count))}
@@ -561,6 +574,7 @@ async function showTask(id) {
         ? `<div class="inline"><select id="f-recording_link">${t.recording_link ? `<option selected>${esc(t.recording_link)}</option>` : '<option value="">读取录屏目录中</option>'}</select>
             <button type="button" data-rec-refresh="1">重新读取</button></div><div id="rec-info" class="rec-info"></div>`
         : codeBlock(t.recording_link), '默认取最新的 mp4')}
+      ${t.record_script ? field('自动录屏脚本', recordScriptHtml(t)) : ''}
       ${field('轨迹文件', t.trajectory_path ? `${codeBlock(t.trajectory_win)}<div class="muted hint">即收集结果中的待上传轨迹 提交表的轨迹文件列直接取它</div>` : plain(''))}
     </div>`, (t.record_steps || []).length ? `${t.record_steps.length} 步` : '')}
 
@@ -621,7 +635,9 @@ async function doAction(t, act, idx) {
     return loadList();
   }
   if (act === 'redo' && !confirm('重做会作废当前会话，并把做题目录恢复到初始快照（未提交的改动会丢失），确定？')) return;
+  if (act === 'auto_release' && !confirm('转人工后自动做题不再推进这道题，之后按手动流程处理，确定？')) return;
   const body = {};
+  if (act === 'auto_retry_regen') { act = 'auto_retry'; body.regen_script = true; }
   if (idx !== undefined) body.idx = +idx;
   if (act === 'approve') await saveReview(id);
   if (act === 'reject') body.comment = val('reject');
@@ -643,9 +659,34 @@ async function doAction(t, act, idx) {
   }
   const r = await api(`/api/tasks/${id}/action/${act}`, { method: 'POST', body });
   if (r.run_key) openLog(r.run_key, `${t.branch} ${act}`);
-  else toast('完成');
+  else toast(act === 'auto_retry' ? '已重试 自动做题会接着推进' : '完成');
   await loadList();
   await showTask(id);
+  if (act.startsWith('auto_')) loadAuto();
+}
+
+// 自动流程停下时的处理框：环节、原因、逐条处理建议，以及日志、重试、转人工
+function autoPauseHtml(t) {
+  const p = t.auto_pause;
+  if (!p) return '';
+  const regen = p.step === '待录屏' ? btn('重新生成录屏脚本并重试', 'auto_retry_regen') : '';
+  return `<div class="auto-pause">
+    <div class="ap-head"><b>自动流程已停下</b><span class="chip fail">${esc(p.step)}</span><span class="muted">${esc(p.time || '')}</span></div>
+    <pre class="ap-reason">${esc(p.reason)}</pre>
+    <div class="ap-hints-title">处理建议</div>
+    <ul class="ap-hints">${(p.hints || []).map(h => `<li>${esc(h)}</li>`).join('')}</ul>
+    <div class="ap-actions">${p.run_key ? `<button type="button" class="ghost" data-log="${esc(p.run_key)}">查看日志</button>` : ''}
+      ${btn('重试', 'auto_retry', 'primary')}${regen}${btn('转人工', 'auto_release', 'ghost')}
+      ${autoState.do?.state === 'running' ? '' : '<span class="muted">自动做题未开启 重试后要开启才会接着推进</span>'}</div>
+  </div>`;
+}
+
+function recordScriptHtml(t) {
+  const r = t.record_script || {};
+  const head = r.manual_needed ? `<span class="fold-bad">判断需要人工录屏</span> ${esc(r.reason || '')}`
+    : `预计 ${esc(r.est_seconds ?? '?')} 秒 生成于 ${esc(r.time || '')}`;
+  return fold(head, `${r.reason && !r.manual_needed ? `<div class="muted hint">${esc(r.reason)}</div>` : ''}${codeBlock(r.script)}
+    <div class="muted hint">产物快照或录屏步骤变化后会重新生成 也可以在停下时点「重新生成录屏脚本并重试」</div>`);
 }
 
 async function saveReview(id) {
@@ -815,6 +856,13 @@ const CONFIG_FIELDS = [
   ['record_root', '录屏目录根'],
   ['recording_dir', '录屏文件目录（WSL 路径，自动取其中最新的 mp4）'],
   ['seq_base', '提交表已有最大序号（新完成的题目从下一个号开始）', 'number'],
+  ['pool_gen_count', '补充题目池每轮出题数（1 到 10）', 'number'],
+  ['auto_backlog_max', '自动做题后段积压上限（验收 查验 录屏阶段的自动题达到该数量就暂不取新题）', 'number'],
+  ['do_ready_timeout_sec', '等待 Claude Code 就绪（秒）', 'number'],
+  ['do_timeout_min', '单题做题超时（分钟）', 'number'],
+  ['do_idle_sec', '做完判定的静止时长（秒，轨迹记录本轮结束后再静止这么久才算做完）', 'number'],
+  ['record_max_sec', '自动录屏时长上限（秒）', 'number'],
+  ['record_audio', '自动录屏录制声音（需要 WSL 中安装 pulseaudio）', 'checkbox'],
 ];
 
 async function loadConfig() {
@@ -842,11 +890,90 @@ $('#config-form').onsubmit = e => {
   });
 };
 
+// ---------- 全自动 ----------
+let autoState = {};
+const AUTO_STATE_TEXT = { idle: '未开启', running: '运行中', stopping: '停止中', failed: '出错停止' };
+
+async function loadAuto() {
+  const prev = autoState;
+  autoState = await api('/api/auto');
+  renderAutoBar();
+  renderPoolCard();
+  // 开关状态或自动题的状态有变化时刷新列表与详情
+  const sig = s => JSON.stringify([s.gen?.state, s.gen?.added, s.do?.state, (s.do?.paused || []).map(x => x.id),
+    (s.do?.front || []).map(x => x.status), (s.do?.backlog || []).map(x => x.status)]);
+  if (prev.do && sig(prev) !== sig(autoState)) {
+    loadList();
+    if (current) showTask(current);
+  }
+}
+
+function renderAutoBar() {
+  const d = autoState.do || {};
+  const st = d.state || 'idle';
+  const front = (d.front || [])[0];
+  const paused = (d.paused || []).length;
+  const label = st === 'running' ? '停止做题' : st === 'stopping' ? '停止中…' : '开始做题';
+  const title = st === 'running' ? '不再取新题 不再启动下一环节 在跑的环节跑完为止'
+    : '从题目池按顺序取题 自动准备环境 做题 收集 验收 查验 录屏';
+  $('#auto-bar').innerHTML = `
+    <button type="button" id="auto-do-btn" class="${st === 'running' ? 'danger' : 'primary'}" ${st === 'stopping' ? 'disabled' : ''} title="${title}">${label}</button>
+    ${st !== 'idle' || front || paused ? `<span class="auto-sum">
+      ${front ? `<a href="#" data-goto="${front.id}" title="做题线当前的题">${esc(front.branch)} ${esc(front.status)}</a>` : '<span class="muted">做题线空闲</span>'}
+      <span title="验收 查验 录屏阶段的自动题 / 积压上限">后段 ${(d.backlog || []).length}/${esc(d.backlog_max ?? '-')}</span>
+      ${paused ? `<a href="#" class="bad" data-paused="1" title="只看自动流程停下待处理的题">需处理 ${paused}</a>` : ''}
+      <span class="muted" title="待初始化且未被接管的题">池 ${esc(d.pool ?? 0)}</span>
+      ${d.error ? `<span class="bad" title="${esc(d.error)}">调度出错</span>` : ''}</span>` : ''}`;
+  $('#auto-do-btn').onclick = () => run(async () => {
+    const action = autoState.do?.state === 'running' ? 'stop' : 'start';
+    autoState = await api('/api/auto/do', { method: 'POST', body: { action } });
+    toast(action === 'start' ? '已开始自动做题' : '已停止取新题 在跑的环节跑完为止');
+    renderAutoBar();
+    loadList();
+  });
+  $('#auto-bar').querySelectorAll('[data-goto]').forEach(a => a.onclick = e => { e.preventDefault(); run(() => showTask(+a.dataset.goto)); });
+  $('#auto-bar').querySelectorAll('[data-paused]').forEach(a => a.onclick = e => {
+    e.preventDefault();
+    $('#status-filter').value = '__paused';
+    run(loadList);
+  });
+}
+
+function renderPoolCard() {
+  const g = autoState.gen || {};
+  const st = g.state || 'idle';
+  const busy = st === 'running' || st === 'stopping';
+  const label = st === 'running' ? '停止补充' : st === 'stopping' ? '本轮结束后停止' : '补充题目池';
+  const chip = { running: 'busy', failed: 'fail', stopping: 'human' }[st] || '';
+  $('#pool-card').innerHTML = `<h3>补充题目池</h3>
+    <div class="pool-row">
+      <div class="pool-stat"><b>${esc(autoState.do?.pool ?? 0)}</b><span class="muted">道题待做</span></div>
+      <span class="chip ${chip}">${AUTO_STATE_TEXT[st] || esc(st)}</span>
+      ${g.started_at ? `<span class="muted">本次 ${esc(g.started_at)} 起 已完成 ${esc(g.rounds)} 轮 入库 ${esc(g.added)} 题</span>` : ''}
+      <span class="spacer"></span>
+      ${g.current_run ? `<button type="button" class="ghost" data-log="${esc(g.current_run)}">当前出题日志</button>` : ''}
+      <button type="button" id="pool-btn" class="${st === 'running' ? 'danger' : 'primary'}" ${st === 'stopping' ? 'disabled' : ''}>${label}</button>
+    </div>
+    <div class="muted hint">每轮 ${esc(g.count ?? 10)} 题 子方向与难度由 AI 判断 技术栈偏好与补充要求为空 出完的题进入题目池（待初始化）；${busy ? '再点一次在当前这轮出题结束后停止' : '开始后一轮接一轮不停出题'}；出错即停</div>
+    ${st === 'failed' ? `<div class="error-box">出错停止：${esc(g.error)}</div>
+      ${g.last_run ? `<div><button type="button" data-log="${esc(g.last_run)}">查看出错日志</button></div>` : ''}` : ''}`;
+  $('#pool-btn').onclick = () => run(async () => {
+    const action = st === 'running' ? 'stop' : 'start';
+    autoState = await api('/api/auto/gen', { method: 'POST', body: { action } });
+    toast(action === 'start' ? '已开始补充题目池' : '当前这轮出题结束后停止');
+    renderPoolCard();
+  });
+  $('#pool-card').querySelectorAll('[data-log]').forEach(b => b.onclick = () => openLog(b.dataset.log, '补充题目池'));
+}
+
 // ---------- 启动 ----------
 (async () => {
   META = await api('/api/meta');
-  $('#status-filter').innerHTML += META.statuses.map(s => `<option>${esc(s)}</option>`).join('');
+  $('#status-filter').innerHTML += META.statuses.map(s => `<option>${esc(s)}</option>`).join('') +
+    '<option value="__auto">自动做题中</option><option value="__paused">自动需处理</option>';
   fillDomains();
   await run(loadList);
+  await run(loadAuto);
   setInterval(() => run(loadList), 10000);
+  setInterval(() => run(loadAuto), 5000);
 })();

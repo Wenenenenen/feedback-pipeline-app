@@ -85,6 +85,21 @@ DEFAULTS = {
     'seq_base': 10,
     # 录屏软件的输出目录（WSL 路径），完成录屏时自动取其中最新的 mp4
     'recording_dir': '/mnt/e/GSB-Recordings',
+    # ---------- 自动出题与自动做题 ----------
+    # 补充题目池每轮出题数量
+    'pool_gen_count': 10,
+    # 自动做题时，验收、查验、录屏阶段积压的自动题达到该数量就暂不取新题
+    'auto_backlog_max': 2,
+    # 等待 Claude Code 启动到可输入状态的上限（秒）
+    'do_ready_timeout_sec': 180,
+    # 单题做题的超时（分钟），超时后关闭会话并判为失败
+    'do_timeout_min': 240,
+    # 轨迹记录到本轮结束后，会话文件再静止这么多秒才算做完
+    'do_idle_sec': 30,
+    # 自动录屏的时长上限（秒）
+    'record_max_sec': 90,
+    # 自动录屏是否录制声音（需要 WSL 中安装 pulseaudio）
+    'record_audio': True,
 }
 
 _lock = threading.Lock()

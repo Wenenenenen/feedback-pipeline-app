@@ -453,7 +453,7 @@ def test_schemas_are_strict():
                 walk(v, f'{path}.{k}')
         if node.get('type') == 'array':
             walk(node['items'], path + '[]')
-    for name in ('qa-gen', 'qa-review', 'qa-rework'):
+    for name in ('qa-gen', 'qa-review', 'qa-rework', 'qa-record'):
         walk(json.loads((ws / 'schemas' / f'{name}.json').read_text(encoding='utf-8')), name)
 
 

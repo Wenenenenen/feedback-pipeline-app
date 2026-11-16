@@ -319,16 +319,22 @@ def start_redo(task_id: int) -> str:
         raise ActionError('只有待做题、待收集或收集失败的题目可以重做')
 
     def work(log, run_key, stop):
-        cfg = config.load()
-        sessions = trajectory.list_sessions(Path(cfg['claude_home']).expanduser(), str(task_dir(t)))
-        voided = sorted(set(t['voided_sessions'] or []) | set(sessions))
-        gitops.reset_to_initial(task_dir(t), t['branch'], t['init_sha'], log=log)
-        db.update_task(task_id, voided_sessions=voided, redo_count=(t['redo_count'] or 0) + 1,
-                       status=S_DO, failed_from=None, last_error=None, session_id=None,
-                       prompt_id=None, done_time=None)
-        log(f'已作废会话 {len(voided)} 个，做题目录已恢复到初始快照')
+        void_and_reset(t, log)
 
     return jobs.submit('redo', task_id, work)
+
+
+def void_and_reset(t: dict, log) -> dict:
+    """重做的实际动作：作废做题目录下已有的会话，做题目录恢复到初始快照，回到待做题。"""
+    cfg = config.load()
+    sessions = trajectory.list_sessions(Path(cfg['claude_home']).expanduser(), str(task_dir(t)))
+    voided = sorted(set(t['voided_sessions'] or []) | set(sessions))
+    gitops.reset_to_initial(task_dir(t), t['branch'], t['init_sha'], log=log)
+    t = db.update_task(t['id'], voided_sessions=voided, redo_count=(t['redo_count'] or 0) + 1,
+                       status=S_DO, failed_from=None, last_error=None, session_id=None,
+                       prompt_id=None, done_time=None)
+    log(f'已作废会话 {len(voided)} 个，做题目录已恢复到初始快照')
+    return t
 
 
 def mark_done(task_id: int) -> dict:
@@ -511,16 +517,42 @@ def start_review(task_id: int) -> str:
 
 # ---------- 查验与录屏 ----------
 
-def approve(task_id: int) -> dict:
-    t = need(db.get_task(task_id), S_CHECK)
+def approve_errors(t: dict) -> list[str]:
+    """人工点「通过」时的门禁，自动查验同样使用。"""
     if not t.get('delivery_score') or not 1 <= int(t['delivery_score']) <= 5:
-        raise ActionError('交付完整性需为 1 到 5 的整数')
+        return ['交付完整性需为 1 到 5 的整数']
+    out = []
     if t.get('reproducibility') not in REPRO_LEVELS:
-        raise ActionError('请选择环境可复现等级')
+        out.append('请选择环境可复现等级')
     issues = feedback_issues(t['feedback'], t['delivery_score'])
     if issues:
-        raise ActionError(f'Feedback 口吻或内容检查有 {len(issues)} 处问题，修正后再通过')
+        out.append(f'Feedback 口吻或内容检查有 {len(issues)} 处问题，修正后再通过')
+    return out
+
+
+def approve(task_id: int) -> dict:
+    t = need(db.get_task(task_id), S_CHECK)
+    errors = approve_errors(t)
+    if errors:
+        raise ActionError(errors[0])
     return db.update_task(task_id, status=S_RECORD)
+
+
+def auto_check_issues(t: dict) -> list[str]:
+    """自动查验：人工通过的门禁加上录屏步骤检查，返回逐条问题（为空表示通过）。"""
+    out = approve_errors(t)
+    for i in feedback_issues(t.get('feedback'), t.get('delivery_score'))[:10]:
+        out.append(f"Feedback {i['rule']}「{i['excerpt']}」")
+    if not t.get('record_steps'):
+        out.append('没有录屏步骤')
+    for i in record_issues(t.get('record_steps'), t.get('record_prep')):
+        out.append(f"录屏 {i['rule']}「{i['excerpt']}」")
+    sc = t.get('review_self_check') or {}
+    bad = [n for k, n in (('has_process', '过程'), ('has_product', '产物'), ('has_code_anchor', '代码锚点'),
+                          ('score_consistent', '原分依据')) if k in sc and not sc[k]]
+    if bad:
+        out.append('验收自检未通过：' + '、'.join(bad) + (f"（{sc.get('note')}）" if sc.get('note') else ''))
+    return out
 
 
 def reject(task_id: int, comment: str) -> str:
@@ -541,15 +573,21 @@ def start_prepare_record(task_id: int) -> str:
     t = need(db.get_task(task_id), S_RECORD)
 
     def work(log, run_key, stop):
-        cfg = config.load()
-        rdir = config.path_of('record_root') / t['branch']
-        # 重新准备时先清掉就绪标记，克隆失败不会留下过期的已就绪状态
-        db.update_task(task_id, record_ready_sha=None, record_ready_time=None)
-        gitops.fresh_clone(cfg['github_repo'], t['branch'], t['artifact_sha'], rdir, log=log)
-        db.update_task(task_id, record_ready_sha=t['artifact_sha'], record_ready_time=db.now())
-        log(f'录屏目录已就绪 {rdir}')
+        prepare_record_dir(t, log)
 
     return jobs.submit('prepare-record', task_id, work)
+
+
+def prepare_record_dir(t: dict, log) -> Path:
+    """把产物快照全新克隆到录屏目录，并记下就绪标记。"""
+    cfg = config.load()
+    rdir = config.path_of('record_root') / t['branch']
+    # 重新准备时先清掉就绪标记，克隆失败不会留下过期的已就绪状态
+    db.update_task(t['id'], record_ready_sha=None, record_ready_time=None)
+    gitops.fresh_clone(cfg['github_repo'], t['branch'], t['artifact_sha'], rdir, log=log)
+    db.update_task(t['id'], record_ready_sha=t['artifact_sha'], record_ready_time=db.now())
+    log(f'录屏目录已就绪 {rdir}')
+    return rdir
 
 
 def complete(task_id: int, recording_link: str) -> dict:
@@ -558,7 +596,8 @@ def complete(task_id: int, recording_link: str) -> dict:
         raise ActionError('请先选定录屏文件')
     if not t.get('trajectory_path'):
         raise ActionError('缺少收集环节留存的轨迹文件')
-    fields = {'recording_link': recording_link.strip(), 'status': S_DONE}
+    # 完成时清掉之前失败留下的报错（如自动录屏失败后重试成功）
+    fields = {'recording_link': recording_link.strip(), 'status': S_DONE, 'failed_from': None, 'last_error': None}
     # 完成时编号，接续提交表已有的最大序号
     if not t.get('seq'):
         fields['seq'] = max(int(config.load()['seq_base'] or 0), db.max_seq()) + 1
