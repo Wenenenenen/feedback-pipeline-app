@@ -7,10 +7,12 @@
 所以按配置作废这次会话、恢复初始快照后重新做题。
 做题过程可以用 attach_command() 给出的命令只读观看。
 """
+import json
 import os
 import subprocess
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 from . import config, db, jobs, pipeline as P, trajectory
@@ -36,6 +38,14 @@ class DriverError(RuntimeError):
 
 class ApiErrorInterrupt(DriverError):
     """做题会话被接口报错中断：这次会话的轨迹不能提交，由 run_do 按配置作废重做。"""
+
+
+class StallInterrupt(DriverError):
+    """做题会话卡住：轨迹累计静止超过上限（多为接入服务慢、反复重试），由 run_do 按配置作废重做。"""
+
+
+# 轨迹单次静止达到这么久（秒）才计入卡住时长；正常思考、跑命令的停顿多在几分钟内，不计入
+STALL_GAP_SEC = 300
 
 
 # 已发出 prompt、Claude Code 正在做题的题目 id（调度器据此开始准备下一道题）
@@ -192,6 +202,26 @@ def _last_error_text(path: Path) -> str:
 FORBIDDEN_CHECK_SEC = 60
 
 
+def _new_timestamps(path: Path, offset: int) -> tuple[list[float], int]:
+    """读取会话文件 offset 之后新写入的完整行，返回其中各条记录的时间戳（秒）与新的读取位置。
+    没有时间戳的元数据行（mode、ai-title 等）不算推进，避免把卡住的时长切碎。"""
+    with path.open('rb') as f:
+        f.seek(offset)
+        data = f.read()
+    end = data.rfind(b'\n')
+    if end < 0:
+        return [], offset
+    out = []
+    for line in data[:end].splitlines():
+        try:
+            t = json.loads(line).get('timestamp')
+            if t:
+                out.append(datetime.fromisoformat(t.replace('Z', '+00:00')).timestamp())
+        except (ValueError, AttributeError):
+            continue
+    return out, offset + end + 1
+
+
 def _sleep(sec: float, stop) -> None:
     """可被人工停止打断的等待。"""
     if stop.wait(sec):
@@ -201,14 +231,19 @@ def _sleep(sec: float, stop) -> None:
 def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
     """轮询轨迹与屏幕，直到这一轮正常结束。
 
-    接口报错中断时抛 ApiErrorInterrupt，由 run_do 决定是否作废重做；
+    接口报错中断时抛 ApiErrorInterrupt，轨迹累计静止超过 do_stall_max_min 时抛 StallInterrupt，
+    都由 run_do 决定是否作废重做；
     中途出现违规调用（子代理、MCP、非内置 skill）立即判失败，不再空等到做完；
     模型提问、超时都抛错。
     """
     deadline = time.time() + int(cfg['do_timeout_min']) * 60
     idle = int(cfg['do_idle_sec'])
+    stall_max = int(cfg.get('do_stall_max_min') or 0) * 60
     last_report = time.time()
     last_check = 0.0
+    # 卡住判定：按轨迹记录的时间戳计算推进，相邻两条记录间隔达到 STALL_GAP_SEC 的时长累计起来（含正在进行的这一段）
+    stamps, offset = _new_timestamps(path, 0)
+    last_ts, stalled = (max(stamps) if stamps else time.time()), 0.0
     while True:
         if stop.is_set():
             raise DriverError('人工停止')
@@ -228,17 +263,30 @@ def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
                 return
         elif not alive(name):
             raise DriverError('Claude Code 会话意外退出，这一轮没有正常结束')
-        if time.time() > deadline:
+        now = time.time()
+        cur = path.stat().st_size
+        if cur > offset:
+            stamps, offset = _new_timestamps(path, offset)
+            for t in sorted(stamps):
+                if t - last_ts >= STALL_GAP_SEC:
+                    stalled += t - last_ts
+                last_ts = max(last_ts, t)
+        open_gap = now - last_ts
+        stall_total = stalled + (open_gap if open_gap >= STALL_GAP_SEC else 0)
+        if stall_max and stall_total >= stall_max:
+            raise StallInterrupt(f'做题卡住：轨迹累计静止 {int(stall_total // 60)} 分钟'
+                                 f'（单次静止 {STALL_GAP_SEC // 60} 分钟以上的累计），达到上限 {stall_max // 60} 分钟')
+        if now > deadline:
             raise DriverError(f"超过 {cfg['do_timeout_min']} 分钟仍未做完")
-        if time.time() - last_report > 300:
+        if now - last_report > 300:
             info = trajectory.parse(path)
-            log(f"做题中 工具调用 {sum(info['tools'].values())} 次 轨迹 {path.stat().st_size // 1024}KB")
-            last_report = time.time()
+            log(f"做题中 工具调用 {sum(info['tools'].values())} 次 轨迹 {cur // 1024}KB 累计静止 {int(stall_total // 60)} 分钟")
+            last_report = now
         time.sleep(5)
 
 
 def run_do(task_id: int, log, stop):
-    """自动做题：做一轮，接口报错中断时按配置等待后作废会话重做，做完进入待收集。"""
+    """自动做题：做一轮，接口报错中断或卡住时按配置等待后作废会话重做（两种情况共用重做次数），做完进入待收集。"""
     cfg = config.load()
     redo_max = int(cfg.get('do_api_error_redo_max') or 0)
     wait_sec = int(cfg.get('do_api_error_wait_sec') or 0)
@@ -247,7 +295,7 @@ def run_do(task_id: int, log, stop):
         try:
             _do_once(task_id, cfg, log, stop)
             break
-        except ApiErrorInterrupt as e:
+        except (ApiErrorInterrupt, StallInterrupt) as e:
             if redone >= redo_max:
                 raise DriverError(f'{e}（已自动作废重做 {redone} 次）' if redone else str(e)) from e
             redone += 1

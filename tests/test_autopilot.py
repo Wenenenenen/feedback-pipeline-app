@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """全自动：轨迹进度判断、确认框按键、补充题目池循环、自动做题调度、自动查验、录屏辅助函数。"""
+import json
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -123,6 +125,68 @@ def test_wait_done_api_error_never_sends_continue(fake_session):
     with pytest.raises(claude_driver.ApiErrorInterrupt, match='接口报错中断：API Error: 504'):
         claude_driver.wait_done('s', p, _cfg(), lambda m: None, threading.Event())
     assert sent == []
+
+
+@pytest.fixture()
+def fake_clock(monkeypatch):
+    """wait_done 用：每次取时间都往前走 60 秒，不真等。"""
+    now = [time.time()]
+
+    def tick():
+        now[0] += 60
+        return now[0]
+    monkeypatch.setattr(claude_driver.time, 'time', tick)
+    return now
+
+
+def test_wait_done_stall(fake_session, fake_clock, monkeypatch):
+    """轨迹单次静止 5 分钟以上的时长累计达到上限时抛 StallInterrupt；轨迹一直在推进时不算卡住。"""
+    p, sent, states = fake_session
+    cfg = _cfg(do_stall_max_min=10, do_timeout_min=100000)
+    # 一直有带时间戳的新记录写入（每轮间隔不到 5 分钟），跑很久也不判卡住，最后正常做完
+    calls = [0]
+
+    def progressing(path):
+        calls[0] += 1
+        stamp = datetime.fromtimestamp(fake_clock[0], timezone.utc).isoformat().replace('+00:00', 'Z')
+        with p.open('a', encoding='utf-8') as f:
+            f.write(json.dumps({'type': 'assistant', 'timestamp': stamp}) + '\n')
+        return 'done' if calls[0] > 60 else 'running'
+    monkeypatch.setattr(trajectory, 'turn_state', progressing)
+    claude_driver.wait_done('s', p, cfg, lambda m: None, threading.Event())
+    # 只写入没有时间戳的元数据行（mode、ai-title 等）不算推进：累计静止达到 10 分钟即判卡住，原因里带「做题卡住」
+    def meta_only(path):
+        with p.open('a', encoding='utf-8') as f:
+            f.write(json.dumps({'type': 'ai-title', 'aiTitle': 'x'}) + '\n')
+        return 'running'
+    monkeypatch.setattr(trajectory, 'turn_state', meta_only)
+    with pytest.raises(claude_driver.StallInterrupt, match='做题卡住') as ei:
+        claude_driver.wait_done('s', p, cfg, lambda m: None, threading.Event())
+    assert '卡住' in autopilot.hints_for(P.S_DO, str(ei.value))[0]
+    # 设为 0 时不判卡住，只受做题超时约束
+    with pytest.raises(claude_driver.DriverError, match='仍未做完'):
+        claude_driver.wait_done('s', p, _cfg(do_stall_max_min=0, do_timeout_min=30), lambda m: None,
+                                threading.Event())
+    assert sent == []
+
+
+def test_run_do_redoes_on_stall(fake_rounds):
+    """卡住与接口报错一样作废重做，共用重做次数。"""
+    from app import config
+    tid, calls, rounds = fake_rounds
+    stall = claude_driver.StallInterrupt('做题卡住：轨迹累计静止 90 分钟')
+    api = claude_driver.ApiErrorInterrupt('Claude Code 接口报错中断：504')
+    config.save({'do_api_error_redo_max': 3, 'do_api_error_wait_sec': 7})
+    rounds([stall, None])
+    claude_driver.run_do(tid, lambda m: None, threading.Event())
+    assert calls == ['do', 'sleep7', 'do'] and db.get_task(tid)['status'] == P.S_COLLECT
+    db.update_task(tid, status=P.S_DO)
+    calls.clear()
+    config.save({'do_api_error_redo_max': 1})
+    rounds([api, stall])
+    with pytest.raises(claude_driver.DriverError, match='做题卡住.*已自动作废重做 1 次'):
+        claude_driver.run_do(tid, lambda m: None, threading.Event())
+    assert calls == ['do', 'sleep7', 'do']
 
 
 @pytest.fixture()
