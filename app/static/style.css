@@ -407,8 +407,8 @@ details.sub-row[open] > .sub-row-head { border-bottom: 1px dashed var(--line); b
 /* 列表序号下方的甲方序号 */
 .t-client { font: 11px var(--mono); color: var(--ok); margin-top: 2px; white-space: nowrap; }
 /* 提交表行标题里的甲方标记：标签与按钮紧挨 */
-.client-mark { display: inline-flex; align-items: center; gap: 4px; }
-.client-mark button { padding: 2px 8px; font-size: 12px; }
+.client-mark, .feishu-mark { display: inline-flex; align-items: center; gap: 4px; }
+.client-mark button, .feishu-mark button { padding: 2px 8px; font-size: 12px; }
 
 /* ---------- 全自动 ---------- */
 /* 工具栏放了自动做题开关后可能放不下，允许折行 */

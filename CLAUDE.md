@@ -4,7 +4,8 @@
 
 ## 结构
 
-- `app/`：FastAPI + SQLite 后端，页面在 `app/static/`，建表脚本在 `app/sql/`。全自动：`autopilot.py`（补充题目池与自动做题调度）、`claude_driver.py`（tmux 驱动 Claude Code 做题）、`recorder.py` 与 `record_harness/harness.mjs`（WSL 虚拟屏后台录屏）。
+- `app/`：FastAPI + SQLite 后端，页面在 `app/static/`，建表脚本在 `app/sql/`。全自动：`autopilot.py`（补充题目池与自动做题调度）、`claude_driver.py`（tmux 驱动 Claude Code 做题）、`recorder.py` 与 `record_harness/harness.mjs`（WSL 虚拟屏后台录屏）。写入飞书：`feishu.py`（按 UID 即甲方序号映射与调度）经 `feishu_bridge.mjs` 调用 `plugin/feishu-table-tool`（WSL 中 `lark-cli` 的用户身份）。
+- `plugin/feishu-table-tool/`：飞书表格填写插件（Node 库，无 npm 依赖），代码不改；其中指向甲方表的 `config.json`、`examples/`、`VALIDATION.md` 不进仓库。
 - `agent/`：Windows 版 Codex 的工作区（`AGENTS.md`、`style.md`、`banned-topics.md`、`.agents/skills/qa-gen`、`.agents/skills/qa-review`、`.agents/skills/qa-rework`、`.agents/skills/qa-record`、`schemas/`），后端通过 `codex exec` 调用；改这里就是改出题与验收的提示词。`agent/runs/` 是运行记录，不进仓库。
 - `docs/private/`：作业文档、质检说明等本地参考资料，不进仓库。
 - 运行时在 WSL `~/jianzhi/feedback-pipeline/`（虚拟环境、数据库、配置、日志、轨迹副本）；做题、验收、录屏目录分别是 WSL `~/jianzhi/feedback-tasks`、`feedback-verify`、`feedback-record` 下的 `<分支名>/`。

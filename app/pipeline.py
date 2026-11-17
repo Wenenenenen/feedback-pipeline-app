@@ -6,7 +6,7 @@ import re
 import shutil
 from pathlib import Path
 
-from . import (codex_runner, config, db, envcheck, gitops, jobs, materials, style_check, submission,
+from . import (codex_runner, config, db, envcheck, feishu, gitops, jobs, materials, style_check, submission,
                trajectory)
 
 # 状态
@@ -706,7 +706,9 @@ def complete(task_id: int, recording_link: str) -> dict:
     insp = db.open_inspection(task_id)
     if insp:
         db.update_inspection(insp['id'], state=I_DONE, resolved_time=db.now())
-    return db.update_task(task_id, **fields)
+    t = db.update_task(task_id, **fields)
+    feishu.on_done(task_id)
+    return t
 
 
 def mark_client_submit(task_id: int, submitted: bool) -> dict:
@@ -928,6 +930,7 @@ def start_rework(task_id: int) -> str:
         else:
             db.update_inspection(insp['id'], state=I_DONE, resolved_time=db.now())
             db.update_task(task_id, **fields, status=S_DONE)
+            feishu.on_done(task_id)
 
     return jobs.submit('qa-rework', task_id, work, ai=True)
 

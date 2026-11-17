@@ -13,6 +13,11 @@ agent/runs/
 # 本地参考资料（作业文档、质检说明等），仓库公开，不能提交
 docs/private/
 
+# 飞书表格插件里指向甲方表格的示例配置、字段快照与验证记录，不能提交
+plugin/feishu-table-tool/config.json
+plugin/feishu-table-tool/examples/
+plugin/feishu-table-tool/VALIDATION.md
+
 # Claude Code 本地设置
 .claude/settings.local.json
 

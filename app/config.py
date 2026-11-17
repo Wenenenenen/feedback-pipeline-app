@@ -115,6 +115,11 @@ DEFAULTS = {
     'record_idle_min': 10,
     # 本机桌面录制被人操作电脑打断后最多重录几次
     'record_user_retries': 3,
+    # ---------- 飞书多维表格 ----------
+    # 飞书多维表格链接（表头同提交表，另有存甲方序号的 UID 列）；留空时不写入飞书
+    'feishu_url': '',
+    # 题目进入已完成（含返修完成）后自动写入飞书：按 UID 找记录，有则更新、无则新增
+    'feishu_auto_sync': True,
 }
 
 _lock = threading.Lock()

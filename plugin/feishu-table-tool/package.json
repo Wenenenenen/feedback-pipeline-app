@@ -1,0 +1,11 @@
+{
+  "name": "feishu-table-tool",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "通过已登录的飞书 CLI 填写多维表格、分享表单和电子表格",
+  "engines": { "node": ">=22" },
+  "bin": { "feishu-fill": "bin/feishu-fill.mjs" },
+  "exports": "./lib/index.mjs",
+  "scripts": { "start": "node bin/feishu-fill.mjs", "test": "node --test test/*.test.mjs" }
+}

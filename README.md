@@ -27,6 +27,7 @@
 | 验收与自动化工具 | WSL 中的 ffmpeg、playwright + chromium；自动做题与自动录屏另需 tmux、xvfb、pulseaudio、fonts-noto-cjk、xterm、xdotool、x11-xserver-utils | 运行下面的 `setup-verify-tools.sh`；点「开始做题」时也会检查 |
 | 本机桌面自动录屏 | Windows 上的 Chrome、Windows Terminal、ffmpeg（含 gfxcapture，`winget install Gyan.FFmpeg`）、Python、node，以及 playwright-core、pyaudiowpatch | 在 Windows 执行 `pwsh -File scripts\setup-desktop-record.ps1`；录屏前会检查 |
 | 录屏软件 | 人工录屏时输出 mp4 到固定目录（默认 `E:\GSB-Recordings`）；自动录屏不经过录屏软件，直接写到待上传文件目录 | — |
+| 飞书 CLI（写入飞书多维表格时需要） | WSL 中 `npm install -g @larksuite/cli`（与 nvm 的 node 同目录），再执行 `lark-cli config init --new`（打开链接或扫码创建应用）和 `lark-cli auth login --recommend`（用对目标多维表格有编辑权限的账号授权）；用户授权约 7 天需重新登录一次 | WSL 中 `bash -ic 'lark-cli auth status --json --verify'`，`identities.user.tokenStatus` 为 `valid` |
 
 ### 2. 克隆与启动
 
@@ -55,6 +56,8 @@ bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/setup-verify-tools.s
 - **待上传文件目录**：收集留存的轨迹与自动录屏放在一起的目录（WSL 路径，默认 `/mnt/e/WorkSpace/jianzhi/feedback-upload`，即 `E:\WorkSpace\jianzhi\feedback-upload`），文件名为「甲方序号-分支名」，改甲方序号时随之改名；
 - **沿用 config.toml 的供应商与模型**：codex 用 CC Switch 或手工配置的第三方 API 时勾选。流水线调用 codex 时带 `--ignore-user-config`，不加载 `config.toml`；勾选后每次运行前只读取 Windows `config.toml` 中的 `model`、`model_provider` 和对应的 `[model_providers.<名称>]` 一节，转成 `-m`、`-c` 参数传给 codex，MCP、插件等仍不加载。CC Switch 切换供应商后流水线自动跟随，不用改配置；API key 由 CC Switch 写在 `auth.json`，流水线不读也不改。`config.toml` 没有 `model` 时用配置页的模型名；推理强度始终用配置页的值；
 - **config.toml 路径**：一般留空，自动按 Windows 的 `CODEX_HOME` 或 `%USERPROFILE%\.codex\config.toml` 定位；定位不到时填它的 WSL 路径（如 `/mnt/c/Users/<用户名>/.codex/config.toml`）；
+- **飞书多维表格链接**：要写入的飞书多维表格链接（表头同提交表，飞书字段名里的 `/` 显示为 `|`，另有一列数字类型的 `UID` 存甲方序号；没有序号、分支、备注三列也可以）；留空时不写入飞书；
+- **完成后自动写入飞书**：默认开启，题目进入已完成（含返修完成）后自动写入；
 - 模型名、推理强度、并发数、超时、连续重连上限、端口段、各目录根一般保持默认。
 
 Codex 工作区路径默认取仓库里的 `agent/`，不用改。
@@ -101,6 +104,7 @@ bash /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app/scripts/start.sh
 7. **查验**：编辑评分与 Feedback（口吻与内容检查通过才能点「通过」），或填写意见打回重新生成。
 8. **录屏**：「准备录屏环境」得到干净克隆，按录屏步骤录制；页面自动取录屏目录中最新的 mp4，核对时长与分辨率后标记完成。
 9. **提交表**：顶部菜单点「提交表」进入提交表页，默认看全部已完成题目，可切换为题目列表里勾选的题目（题目列表上方的「提交表」按钮在有勾选时直接看勾选的），单元格点击即复制，也可整行复制后粘贴到表格（整行与表头都不含序号、分支、备注三列）。序号列即甲方序号；折叠的行下方显示 User Prompt 第一句，方便辨认；在甲方平台提交后点该行的「标记已提交」。语言/框架列统一为不带版本号、英文逗号分隔的写法（如 `java,python,nodejs`）。
+   - **写入飞书**：配置了飞书多维表格链接时，题目标记完成（含自动录屏完成、返修完成）后后台自动写入，运行日志里能看到每题新增或更新的结果。飞书表的 `UID` 列就是甲方序号，按它找记录，找到就更新，没找到就新增，不会重复。轨迹文件和运行录屏作为附件上传；更新时，飞书里已经是同名同大小的文件就不重传，换了文件就上传新文件再删掉旧的。提交表页每行标出「飞书已写入 / 飞书未写入」（同一个 UID 有多条时标「飞书重复」，需要到飞书里删掉多余的），可以单独点「写入飞书 / 重写飞书」；工具栏「写入飞书」把当前页的题目一起写入。写入失败只记在运行日志里，不影响题目状态。飞书表里没有对应提交表列的字段不填；单选选项不在飞书表里时报错，先在飞书里加上这个选项再重写。
 10. **质检返修**：质检不通过的数据直接放弃。待返修的，在已完成题目的「质检与返修」卡片粘贴质检原文（开头为【AI质检｜待返修】），点「AI 返修」，后台调用 `codex exec '$qa-rework'` 按质检原文直接处理：改写 Feedback 等内容，需要时修改产物并推送新的产物快照。处理完，这一轮的卡片里列出提交表要改的列名；新旧内容到提交表页里看，这道题标出「第N轮返修」，改过的格高亮（悬停看原值），也可点「复制改动格」。产物有改动或需要重录时题目回到待录屏，录完标记完成；否则直接回到已完成。甲方序号保持不变。
 
 ## 全自动
@@ -125,3 +129,4 @@ cd /mnt/e/WorkSpace/jianzhi/feedback-pipeline-app
 - Windows `~/.codex/skills/` 下的个人 skill 会被 codex 一并加载，流水线不依赖它们；不要把 `agent/` 里的 skill 装到全局目录。
 - 不要在仓库根目录放 AGENTS.md，codex 会从仓库根一路加载到 `agent/`，根目录的规则会混入流水线运行。
 - 数据库每天备份到 `data/backups/`，保留 14 份。
+- 写入飞书通过 `plugin/feishu-table-tool`（只用已登录的用户身份调用 `lark-cli`，不保存 App Secret 或 token）；后端用 `app/feishu_bridge.mjs` 调它。飞书报授权过期时，在 WSL 中重新执行 `lark-cli auth login --recommend`。

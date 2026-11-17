@@ -53,8 +53,14 @@ def log_dir():
     return d
 
 
-def submit(kind: str, task_id: int | None, fn, ai: bool = False) -> str:
-    """提交后台任务。fn(log, run_key, stop_flag) 抛异常即视为失败。返回运行 ID。"""
+def submit(kind: str, task_id: int | None, fn, ai: bool = False, side: bool = False) -> str:
+    """提交后台任务。fn(log, run_key, stop_flag) 抛异常即视为失败。返回运行 ID。
+
+    side 为旁路任务（如写入飞书）：运行记录挂在题目下，但不占题目互斥，失败也不改题目状态。
+    """
+    run_task = task_id
+    if side:
+        task_id = None
     if task_id is not None:
         with _locks_guard:
             if task_id in _task_locks:
@@ -62,7 +68,7 @@ def submit(kind: str, task_id: int | None, fn, ai: bool = False) -> str:
             _task_locks.add(task_id)
     run_key = new_run_key(kind)
     log_path = log_dir() / f'{run_key}.log'
-    db.insert_run(run_key, kind, task_id, str(log_path))
+    db.insert_run(run_key, kind, run_task, str(log_path))
     stop = threading.Event()
     _stop_flags[run_key] = stop
 

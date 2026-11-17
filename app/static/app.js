@@ -282,6 +282,7 @@ async function loadSubmission() {
         <b class="mono">${esc(r.branch)}</b><span class="chip ${statusClass(r.status)}">${esc(r.status)}</span>
         ${reworkChip}
         <span class="client-mark" data-client-slot="${ri}">${clientMarkHtml(r)}</span>
+        <span class="feishu-mark" data-feishu-slot="${ri}"></span>
         <span class="spacer"></span>
         ${nChanged ? `<button type="button" data-changed-copy="${ri}" title="每行一格 列名与新值以制表符分隔">复制改动格</button>` : ''}
         <button type="button" data-row-copy="${ri}">复制整行</button>
@@ -343,6 +344,54 @@ async function loadSubmission() {
   $('#sub-copy-head').onclick = () => copyText(data.columns.filter(c => !ROW_COPY_SKIP.has(c)).join('\t'));
   $('#sub-xlsx').disabled = !data.rows.length;
   $('#sub-xlsx').onclick = () => run(() => downloadSubmission(ids));
+  // 写入飞书：范围与当前页一致；写完刷新各行的飞书标记
+  const rowIds = data.rows.map(r => r.id);
+  $('#sub-feishu').disabled = !data.rows.length;
+  $('#sub-feishu').onclick = () => run(async () => {
+    if (!confirm(`把当前页的 ${rowIds.length} 题写入飞书？按 UID（甲方序号）有则更新 无则新增`)) return;
+    await syncFeishu(rowIds, `写入飞书 ${rowIds.length} 题`);
+  });
+  loadFeishuMarks(data, rowIds);
+}
+
+// 后台写入飞书并打开运行日志，运行结束后刷新提交表页的飞书标记
+async function syncFeishu(ids, title) {
+  const r = await api('/api/feishu/sync', { method: 'POST', body: { ids } });
+  openLog(r.run_key, title);
+  const timer = setInterval(async () => {
+    const tab = logTabs.get(r.run_key);
+    // 日志标签被关掉时停止等待
+    if (!tab) return clearInterval(timer);
+    if (tab.status !== 'running') {
+      clearInterval(timer);
+      if (!$('#tab-submission').classList.contains('hidden')) run(loadSubmission);
+    }
+  }, 3000);
+}
+
+// 各行的飞书标记：飞书表里有这个 UID 时显示已写入（多条时提示重复），每行都可单独写入
+async function loadFeishuMarks(data, ids) {
+  const B = $('#sub-body');
+  let st;
+  try {
+    st = await api('/api/feishu/status', { method: 'POST', body: { ids } });
+  } catch (e) {
+    B.querySelectorAll('[data-feishu-slot]').forEach(s => { s.innerHTML = `<span class="chip fail" title="${esc(e.message)}">飞书读取失败</span>`; });
+    return;
+  }
+  if (!st.configured) return;
+  B.querySelectorAll('[data-feishu-slot]').forEach(slot => {
+    const r = data.rows[+slot.dataset.feishuSlot];
+    const recs = st.records[r.id] || [];
+    const chip = recs.length > 1 ? `<span class="chip fail" title="${esc(recs.join(' '))}">飞书重复 ${recs.length} 条</span>`
+      : recs.length ? `<span class="chip ok" title="${esc(recs[0])}">飞书已写入</span>` : '<span class="chip">飞书未写入</span>';
+    slot.innerHTML = `${chip}<button type="button" class="${recs.length ? 'ghost' : ''}" data-feishu-one="${r.id}" title="按 UID 有则更新 无则新增">${recs.length ? '重写飞书' : '写入飞书'}</button>`;
+    slot.querySelector('[data-feishu-one]').onclick = e => {
+      e.preventDefault();
+      e.stopPropagation();
+      run(() => syncFeishu([r.id], `${r.branch} 写入飞书`));
+    };
+  });
 }
 
 // 题目列表的「提交表」按钮：有勾选时直接看勾选的题，否则看全部已完成的
@@ -933,6 +982,8 @@ const CONFIG_FIELDS = [
   ['record_desktop', '自动录屏在本机桌面录制（用本机 Chrome Windows Terminal 和真实文件对话框 画面与真人录屏一致 只在桌面空闲时录 有人碰鼠标键盘立即中止 关闭时在 WSL 虚拟屏后台录制）', 'checkbox'],
   ['record_idle_min', '本机桌面录制前的空闲时长（分钟 没有鼠标键盘操作且没锁屏达到这么久才开录）', 'number'],
   ['record_user_retries', '本机桌面录制被打断后的重录次数', 'number'],
+  ['feishu_url', '飞书多维表格链接（表头同提交表 另有存甲方序号的 UID 列 留空时不写入飞书 使用 WSL 中 lark-cli 登录的账号）'],
+  ['feishu_auto_sync', '完成后自动写入飞书（题目进入已完成 含返修完成 后按 UID 有则更新 无则新增 失败只记在运行日志里）', 'checkbox'],
 ];
 
 async function loadConfig() {

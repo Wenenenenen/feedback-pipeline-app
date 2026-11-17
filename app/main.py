@@ -10,7 +10,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import autopilot, claude_driver, config, db, jobs, pipeline as P, submission
+from . import autopilot, claude_driver, config, db, feishu, jobs, pipeline as P, submission
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -52,6 +52,7 @@ EDITABLE = {
 
 @app.exception_handler(P.ActionError)
 @app.exception_handler(jobs.Busy)
+@app.exception_handler(feishu.FeishuError)
 async def _action_error(_, exc):
     return JSONResponse(status_code=400, content={'detail': str(exc)})
 
@@ -308,6 +309,24 @@ def submission_rows(body: dict = Body(default={})):
                      'client_seq': t['client_seq'], 'client_submit_time': t['client_submit_time'],
                      'rework': rework, 'cells': submission.row(t)})
     return {'columns': submission.COLUMNS, 'rows': rows}
+
+
+@app.post('/api/feishu/sync')
+def feishu_sync(body: dict = Body(default={})):
+    """把提交表页当前范围的题目写入飞书（按 UID 新增或更新），后台执行，返回运行 ID。"""
+    tasks = _submission_tasks(body)
+    if not tasks:
+        raise HTTPException(400, '没有可写入的题目')
+    task_id = tasks[0]['id'] if len(tasks) == 1 else None
+    return {'run_key': feishu.start_sync([t['id'] for t in tasks], task_id=task_id)}
+
+
+@app.post('/api/feishu/status')
+def feishu_status(body: dict = Body(default={})):
+    """提交表页各题在飞书表里的记录：{题目 id: [recordId...]}，空数组表示还没写入。"""
+    if not (config.load().get('feishu_url') or '').strip():
+        return {'configured': False, 'records': {}}
+    return {'configured': True, 'records': feishu.status([t['id'] for t in _submission_tasks(body)])}
 
 
 @app.get('/api/recordings')
