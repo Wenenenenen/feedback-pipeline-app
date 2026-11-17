@@ -192,6 +192,8 @@ export async function createBackend(args, emit) {
 
   // 点击之后等原生文件选择框：摆到屏幕中间，输入路径回车
   b.beforeUpload = async () => new Set(await visibleWindows());
+  // GTK 文件框的位置栏只能输入一个路径，多选时由执行器接管选择框直接设置文件（画面上看得到点击与导入结果）
+  b.multiUploadVia = 'filechooser';
   b.chooseFile = async (before, abs, human) => {
     let dlg = null;
     for (let i = 0; i < 60 && !dlg; i++) {

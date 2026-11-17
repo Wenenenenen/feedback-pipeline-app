@@ -238,19 +238,43 @@ export async function createBackend(args, emit) {
   };
 
   // 上传：文件先放到「下载」下的暂存目录（对话框默认打开这里），点击后在对话框的文件名框里输入文件名回车
-  b.beforeUpload = async abs => {
-    const name = path.posix.basename(abs);
-    // /mnt/<盘符> 下的文件直接按盘符路径读，其余经 \\wsl.localhost 读；copyFile 读 WSL 共享会报 EPERM，改为读出再写入
-    const m = abs.match(/^\/mnt\/([a-z])\/(.*)$/);
-    const src = m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`
-      : `\\\\wsl.localhost\\${args.distro}${abs.replace(/\//g, '\\')}`;
-    fs.writeFileSync(path.join(staging, name), fs.readFileSync(src));
-    staged.add(path.join(staging, name));
+  b.beforeUpload = async absOrList => {
+    for (const abs of [].concat(absOrList)) {
+      const name = path.posix.basename(abs);
+      // /mnt/<盘符> 下的文件直接按盘符路径读，其余经 \\wsl.localhost 读；copyFile 读 WSL 共享会报 EPERM，改为读出再写入
+      const m = abs.match(/^\/mnt\/([a-z])\/(.*)$/);
+      const src = m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`
+        : `\\\\wsl.localhost\\${args.distro}${abs.replace(/\//g, '\\')}`;
+      fs.writeFileSync(path.join(staging, name), fs.readFileSync(src));
+      staged.add(path.join(staging, name));
+    }
     return new Set((await windows()).map(w => w.hwnd));
   };
-  b.chooseFile = async (before, abs, human) => {
+  b.chooseFile = async (before, absOrList, human) => {
     const dlg = await waitNewWindow(before, x => x.class === '#32770', 6000);
     if (!dlg) return false;
+    if (Array.isArray(absOrList)) {
+      // 多选：与人一样在「文件名」框里输入带引号的文件名列表（"a.png" "b.png"）后回车；Alt+N 先把焦点放到文件名框
+      const names = absOrList.map(f => path.posix.basename(f));
+      await sleep(rand(600, 1000));
+      const [l, t, r, bt] = dlg.rect;
+      await human.moveTo(l + (r - l) * rand(0.45, 0.65), t + (bt - t) * rand(0.35, 0.55));
+      await sleep(rand(300, 600));
+      await helper.req('key', { combo: 'alt+n', hold: rand(0.05, 0.1) });
+      await sleep(rand(200, 400));
+      emit('upload-multi', { names, via: 'dialog' });
+      await human.type(names.map(n => `"${n}"`).join(' '), 45);
+      await sleep(rand(400, 700));
+      await helper.req('key', { combo: 'return' });
+      for (let i = 0; i < 60; i++) {
+        await sleep(100);
+        if (!(await windows()).some(x => x.hwnd === dlg.hwnd)) break;
+        if (i === 59) throw new Error(`文件对话框没有关闭，可能输入框不支持多选或暂存目录 ${staging} 里缺文件：${names.join(', ')}`);
+      }
+      front = 'browser';
+      return true;
+    }
+    const abs = absOrList;
     const name = path.posix.basename(abs);
     // 对话框打开在暂存目录（Chrome 配置里的上次目录）；一边「看」对话框，一边用 UI 自动化找文件在列表里的位置
     const found = uiaFind(dlg.hwnd, name);

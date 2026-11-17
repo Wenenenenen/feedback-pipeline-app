@@ -208,6 +208,24 @@ async function main() {
       await b.key(combo);
       await sleep(opts.pause ?? rand(150, 300));
     },
+    // 在浏览器开发者工具的控制台里执行一行表达式，画面上看得到打开控制台、逐字输入和返回值：
+    // 只用于录屏步骤要求读取精确像素等页面上没有入口的数值；默认看完结果后关掉开发者工具
+    async console(expr, opts = {}) {
+      await ensureBrowser();
+      const text = String(expr).replace(/\s*\n\s*/g, ' ').trim();
+      await b.key('ctrl+shift+j');
+      // 等开发者工具打开并把焦点放到控制台输入行
+      await sleep(opts.openWait ?? rand(1500, 2200));
+      emit('console-run', { expr: text.slice(0, 200) });
+      await b.typeText(text, typingDelays(text, opts.delay ?? 40));
+      await sleep(rand(300, 600));
+      await b.key('Return');
+      await sleep(opts.pause ?? 2500);
+      if (opts.close !== false) {
+        await b.key('F12');
+        await sleep(rand(400, 700));
+      }
+    },
     // 滚轮滚动：正数向下，每格之间的间隔不完全一样
     async scroll(notches = 3) {
       await ensureBrowser();
@@ -341,14 +359,29 @@ async function main() {
         throw new Error(`下拉框没有选中 ${JSON.stringify(option)}`);
       }
     },
-    // 点上传按钮，在弹出的系统文件选择框里选文件
+    // 点上传按钮，在弹出的系统文件选择框里选文件；file 为数组时一次多选（文件名不能重复，输入框要支持 multiple）
     async upload(t, file, opts = {}) {
       const files = Array.isArray(file) ? file : [file];
-      if (files.length !== 1) throw new Error('ctx.upload 一次只能选一个文件');
-      const abs = path.posix.resolve(args.cwd, files[0]);
-      const before = await b.beforeUpload(abs);
+      if (!files.length) throw new Error('ctx.upload 至少要给一个文件');
+      const abs = files.map(f => path.posix.resolve(args.cwd, f));
+      const names = abs.map(f => path.posix.basename(f));
+      if (new Set(names).size !== names.length) throw new Error(`ctx.upload 多选的文件名不能重复：${names.join(', ')}`);
+      const one = abs.length === 1 ? abs[0] : abs;
+      const before = await b.beforeUpload(one);
+      // 后端不能在系统文件框里多选时（虚拟屏的 GTK 文件框），由它在点击前接管选择框，点击后直接设置文件
+      const chooser = abs.length > 1 && b.multiUploadVia === 'filechooser'
+        ? page.waitForEvent('filechooser', { timeout: 6000 }) : null;
       await ctx.click(t, opts);
-      if (!(await b.chooseFile(before, abs, human))) {
+      if (chooser) {
+        const fc = await chooser.catch(() => null);
+        if (!fc) throw new Error('点击后没有弹出文件选择框：目标要是 <input type=file> 或会打开它的按钮、label');
+        if (!fc.isMultiple()) throw new Error('这个文件输入框不支持多选（没有 multiple），改成一次选一个文件');
+        emit('upload-multi', { names, via: 'filechooser' });
+        await fc.setFiles(abs);
+        await sleep(rand(300, 600));
+        return;
+      }
+      if (!(await b.chooseFile(before, one, human))) {
         throw new Error('点击后没有弹出文件选择框：目标要是 <input type=file> 或会打开它的按钮、label，'
           + '且脚本里不能再监听 filechooser（会被 Playwright 拦截，不弹框）');
       }
