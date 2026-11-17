@@ -70,6 +70,23 @@ def test_continue_allowed(tmp_path):
     assert v['errors'] == [] and v['continue_count'] == 2
 
 
+def test_synthetic_rejected(tmp_path):
+    """客户端占位消息（model 为 <synthetic>）即使后面「继续」做完也不能提交。"""
+    err = {'type': 'assistant', 'isApiErrorMessage': True, 'error': 'server_error', 'sessionId': SID,
+           'message': {'model': '<synthetic>', 'content': [{'type': 'text', 'text': 'API Error: 504 bad response'}]}}
+    rows = base(extra_prompts=['继续'])
+    rows.insert(-2, err)
+    info, v = check(tmp_path, rows)
+    assert info['synthetic'] == 1 and info['models'] == {'auto_model/urm': 2}
+    assert any('<synthetic>' in e and '接口报错中断 1 次' in e for e in v['errors'])
+    # 没有报错标记的占位消息（如会话被打断）同样拦下
+    rows = base()
+    rows.insert(-1, {'type': 'assistant', 'sessionId': SID,
+                     'message': {'model': '<synthetic>', 'content': [{'type': 'text', 'text': 'No response requested.'}]}})
+    _, v = check(tmp_path, rows)
+    assert any('<synthetic>' in e and '会话被打断' in e for e in v['errors'])
+
+
 def test_follow_up_rejected(tmp_path):
     _, v = check(tmp_path, base(extra_prompts=['你没做断流重连']))
     assert any('追问' in e for e in v['errors'])

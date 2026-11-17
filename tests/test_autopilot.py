@@ -79,17 +79,16 @@ def test_parse_api_errors_and_forbidden_calls(tmp_path):
                                'stop_sequence', isApiErrorMessage=True)])
     info = trajectory.parse(p)
     assert info['api_errors'] == ['API Error: bad response status code 504']
+    assert info['synthetic'] == 1
     assert 'API Error' not in info['final_text']
     bad = trajectory.forbidden_calls(info, [])
     assert any('MCP' in b for b in bad) and any('子代理' in b for b in bad)
 
 
 def test_interrupt_remark():
-    assert P.interrupt_remark({'api_errors': []}, 0) == ''
-    r = P.interrupt_remark({'api_errors': ['API Error: bad response status code 504',
-                                           'API Error: 529 overloaded']}, 2)
-    assert '接口报错504 529中断2次' in r and '继续2次' in r and 'promptid取第一轮' in r
-    assert '无报错停止' in P.interrupt_remark({'api_errors': []}, 1)
+    assert P.interrupt_remark(0) == ''
+    r = P.interrupt_remark(2)
+    assert '无报错停止' in r and '继续2次' in r and 'promptid取第一轮' in r
 
 
 @pytest.fixture()
@@ -101,7 +100,7 @@ def fake_session(monkeypatch, tmp_path):
     monkeypatch.setattr(claude_driver, 'alive', lambda name: True)
     monkeypatch.setattr(claude_driver, 'capture', lambda name: '')
     monkeypatch.setattr(claude_driver, '_sleep', lambda sec, stop: None)
-    monkeypatch.setattr(claude_driver, 'send_continue', lambda name, path, log, stop: sent.append(name))
+    monkeypatch.setattr(claude_driver, 'paste_and_submit', lambda name, text: sent.append(text))
     monkeypatch.setattr(claude_driver.time, 'sleep', lambda s: None)
 
     def states(seq):
@@ -115,24 +114,65 @@ def _cfg(**kw):
     return {**config.DEFAULTS, 'do_idle_sec': 0, **kw}
 
 
-def test_wait_done_auto_continue_on_api_error(fake_session):
+def test_wait_done_api_error_never_sends_continue(fake_session):
+    """接口报错中断时不输入「继续」，直接抛 ApiErrorInterrupt 交给 run_do 作废重做。"""
     p, sent, states = fake_session
-    # 报错一次后自动「继续」，再正常做完
-    states(['api_error', 'running', 'done'])
-    claude_driver.wait_done('s', p, _cfg(do_auto_continue_max=3), lambda m: None, threading.Event())
-    assert sent == ['s']
-    # 超过次数上限判失败，原因里带上已继续的次数
-    sent.clear()
-    states(['api_error', 'running', 'api_error'])
-    with pytest.raises(claude_driver.DriverError, match='已自动输入「继续」1 次'):
-        claude_driver.wait_done('s', p, _cfg(do_auto_continue_max=1), lambda m: None, threading.Event())
-    assert sent == ['s']
-    # 设为 0 时不自动继续，直接判失败
-    sent.clear()
-    states(['api_error'])
-    with pytest.raises(claude_driver.DriverError, match='接口报错中断'):
-        claude_driver.wait_done('s', p, _cfg(do_auto_continue_max=0), lambda m: None, threading.Event())
+    write_jsonl(p, [_user('做个东西'), _assistant([{'type': 'text', 'text': 'API Error: 504'}], 'stop_sequence',
+                                                 isApiErrorMessage=True)])
+    states(['running', 'api_error'])
+    with pytest.raises(claude_driver.ApiErrorInterrupt, match='接口报错中断：API Error: 504'):
+        claude_driver.wait_done('s', p, _cfg(), lambda m: None, threading.Event())
     assert sent == []
+
+
+@pytest.fixture()
+def fake_rounds(data_dir, monkeypatch):
+    """run_do 用：每一轮做题按给定结果返回（None 为做完，异常为抛出），等待不真睡。"""
+    tid = new_task(status=P.S_DO, auto_run=1)
+    calls = []
+    monkeypatch.setattr(claude_driver, '_sleep', lambda sec, stop: calls.append(f'sleep{sec}'))
+
+    def rounds(seq):
+        it = iter(seq)
+
+        def once(task_id, cfg, log, stop):
+            calls.append('do')
+            r = next(it)
+            if r:
+                raise r
+        monkeypatch.setattr(claude_driver, '_do_once', once)
+    return tid, calls, rounds
+
+
+def test_run_do_redoes_on_api_error(fake_rounds):
+    from app import config
+    tid, calls, rounds = fake_rounds
+    err = claude_driver.ApiErrorInterrupt('Claude Code 接口报错中断：504')
+    # 报错一次后等待、作废重做，第二轮做完进入待收集
+    config.save({'do_api_error_redo_max': 3, 'do_api_error_wait_sec': 7})
+    rounds([err, None])
+    claude_driver.run_do(tid, lambda m: None, threading.Event())
+    assert calls == ['do', 'sleep7', 'do'] and db.get_task(tid)['status'] == P.S_COLLECT
+    # 超过次数上限判失败，原因里带上已重做的次数，处理建议提示接入服务
+    db.update_task(tid, status=P.S_DO)
+    calls.clear()
+    config.save({'do_api_error_redo_max': 1})
+    rounds([err, err])
+    with pytest.raises(claude_driver.DriverError, match='已自动作废重做 1 次') as ei:
+        claude_driver.run_do(tid, lambda m: None, threading.Event())
+    assert calls == ['do', 'sleep7', 'do']
+    assert '接入服务' in autopilot.hints_for(P.S_DO, str(ei.value))[0]
+    # 设为 0 时不重做，直接判失败；其他失败不重做
+    calls.clear()
+    config.save({'do_api_error_redo_max': 0})
+    rounds([err])
+    with pytest.raises(claude_driver.DriverError, match='接口报错中断'):
+        claude_driver.run_do(tid, lambda m: None, threading.Event())
+    config.save({'do_api_error_redo_max': 3})
+    rounds([claude_driver.DriverError('模型在向人提问')])
+    with pytest.raises(claude_driver.DriverError, match='向人提问'):
+        claude_driver.run_do(tid, lambda m: None, threading.Event())
+    assert calls == ['do', 'do']
 
 
 def test_wait_done_stops_on_forbidden_call(fake_session):

@@ -100,10 +100,11 @@ DEFAULTS = {
     'do_timeout_min': 240,
     # 轨迹记录到本轮结束后，会话文件再静止这么多秒才算做完
     'do_idle_sec': 30,
-    # 做题时接口报错中断（如 504、529）自动输入「继续」的次数上限，0 表示不自动继续、直接停下
-    'do_auto_continue_max': 3,
-    # 接口报错后等待多少秒再输入「继续」
-    'do_continue_wait_sec': 60,
+    # 做题时接口报错中断（如 504、529）自动作废会话重做的次数上限，0 表示不自动重做、直接停下
+    # （报错会在轨迹里留下 model 为 <synthetic> 的占位消息，甲方质检判不通过，不能输入「继续」）
+    'do_api_error_redo_max': 3,
+    # 接口报错后等待多少秒再重新做题
+    'do_api_error_wait_sec': 60,
     # 自动录屏的时长上限（秒）
     'record_max_sec': 90,
     # 自动录屏是否录制声音（虚拟屏需要 WSL 中安装 pulseaudio，本机桌面需要 Windows 的 pyaudiowpatch）

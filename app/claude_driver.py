@@ -3,7 +3,8 @@
 
 与人工做题保持一致：做题目录下以 bypass 模式启动全新会话，首条输入就是 prompt 原文，只发送一次；
 结束时直接关闭会话，不再输入任何内容（避免轨迹里多出人工输入导致收集校验不过）。
-唯一的例外是接口报错中断：按配置自动输入「继续」，与人工处理中断的做法一致。
+接口报错中断时不输入「继续」：报错会在轨迹里留下 model 为 <synthetic> 的占位消息，甲方质检判不通过，
+所以按配置作废这次会话、恢复初始快照后重新做题。
 做题过程可以用 attach_command() 给出的命令只读观看。
 """
 import os
@@ -31,6 +32,10 @@ CURSOR = '❯'
 
 class DriverError(RuntimeError):
     pass
+
+
+class ApiErrorInterrupt(DriverError):
+    """做题会话被接口报错中断：这次会话的轨迹不能提交，由 run_do 按配置作废重做。"""
 
 
 # 已发出 prompt、Claude Code 正在做题的题目 id（调度器据此开始准备下一道题）
@@ -183,7 +188,6 @@ def _last_error_text(path: Path) -> str:
     return ''
 
 
-CONTINUE_TEXT = '继续'
 # 做题中途检查违规调用（子代理、MCP、非内置 skill）的间隔秒数
 FORBIDDEN_CHECK_SEC = 60
 
@@ -194,43 +198,15 @@ def _sleep(sec: float, stop) -> None:
         raise DriverError('人工停止')
 
 
-def send_continue(name: str, path: Path, log, stop, timeout: int = 90) -> None:
-    """接口报错中断后输入「继续」：等界面空闲再发送，确认轨迹里出现这条人工输入。"""
-    before = len(trajectory.human_prompts(trajectory.load_rows(path)))
-    # 报错后界面回到输入状态需要一点时间，忙碌标记消失再输入
-    for _ in range(30):
-        if not alive(name):
-            raise DriverError('Claude Code 会话意外退出，无法输入「继续」')
-        if BUSY_MARK not in capture(name).lower():
-            break
-        _sleep(2, stop)
-    paste_and_submit(name, CONTINUE_TEXT)
-    deadline = time.time() + timeout
-    nudged = False
-    start = time.time()
-    while time.time() < deadline:
-        _sleep(2, stop)
-        if len(trajectory.human_prompts(trajectory.load_rows(path))) > before:
-            return
-        if not nudged and time.time() - start > 30:
-            log('30 秒内轨迹里没有出现「继续」，补按一次回车')
-            tmux('send-keys', '-t', name, 'Enter')
-            nudged = True
-    raise DriverError(f'输入「继续」后 {timeout} 秒内轨迹里没有出现这条输入，屏幕：\n{capture(name)[-1500:]}')
-
-
 def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
     """轮询轨迹与屏幕，直到这一轮正常结束。
 
-    接口报错中断时按配置等待后自动输入「继续」（作业规则允许，提交时取第一轮的 prompt 与 promptid），
-    超过次数上限才判失败；中途出现违规调用（子代理、MCP、非内置 skill）立即判失败，不再空等到做完；
+    接口报错中断时抛 ApiErrorInterrupt，由 run_do 决定是否作废重做；
+    中途出现违规调用（子代理、MCP、非内置 skill）立即判失败，不再空等到做完；
     模型提问、超时都抛错。
     """
     deadline = time.time() + int(cfg['do_timeout_min']) * 60
     idle = int(cfg['do_idle_sec'])
-    max_continue = int(cfg.get('do_auto_continue_max') or 0)
-    continue_wait = int(cfg.get('do_continue_wait_sec') or 0)
-    continued = 0
     last_report = time.time()
     last_check = 0.0
     while True:
@@ -243,16 +219,7 @@ def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
                 raise DriverError('做题中出现不允许的调用，轨迹不能提交：' + '；'.join(bad))
         state = trajectory.turn_state(path)
         if state == 'api_error':
-            err = _last_error_text(path) or '见做题会话'
-            if continued >= max_continue:
-                extra = f'（已自动输入「继续」{continued} 次）' if continued else ''
-                raise DriverError(f'Claude Code 接口报错中断{extra}：{err}')
-            continued += 1
-            log(f'接口报错中断：{err}；{continue_wait} 秒后输入「继续」（第 {continued}/{max_continue} 次）')
-            _sleep(continue_wait, stop)
-            send_continue(name, path, log, stop)
-            log('已输入「继续」，接着等待做完')
-            continue
+            raise ApiErrorInterrupt(f"Claude Code 接口报错中断：{_last_error_text(path) or '见做题会话'}")
         if state == 'asking':
             raise DriverError('模型在向人提问（等待回答），按做题规则需要重做')
         if state == 'done':
@@ -271,8 +238,27 @@ def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
 
 
 def run_do(task_id: int, log, stop):
-    """一次完整的自动做题：清理上次残留 → 启动会话 → 粘贴 prompt → 等待结束 → 进入待收集。"""
+    """自动做题：做一轮，接口报错中断时按配置等待后作废会话重做，做完进入待收集。"""
     cfg = config.load()
+    redo_max = int(cfg.get('do_api_error_redo_max') or 0)
+    wait_sec = int(cfg.get('do_api_error_wait_sec') or 0)
+    redone = 0
+    while True:
+        try:
+            _do_once(task_id, cfg, log, stop)
+            break
+        except ApiErrorInterrupt as e:
+            if redone >= redo_max:
+                raise DriverError(f'{e}（已自动作废重做 {redone} 次）' if redone else str(e)) from e
+            redone += 1
+            # 会话已在 _do_once 中关闭；下一轮开头发现未作废的会话，会作废并恢复初始快照
+            log(f'{e}；{wait_sec} 秒后作废这次会话重新做题（第 {redone}/{redo_max} 次）')
+            _sleep(wait_sec, stop)
+    db.update_task(task_id, status=P.S_COLLECT, failed_from=None, last_error=None)
+
+
+def _do_once(task_id: int, cfg: dict, log, stop):
+    """做一轮：清理上次残留 → 启动会话 → 粘贴 prompt → 等待结束，结束或出错都关闭会话。"""
     t = db.get_task(task_id)
     d = P.task_dir(t)
     home = Path(cfg['claude_home']).expanduser()
@@ -305,7 +291,6 @@ def run_do(task_id: int, log, stop):
     finally:
         _mark_started(task_id, False)
         kill(name)
-    db.update_task(task_id, status=P.S_COLLECT, failed_from=None, last_error=None)
 
 
 def start_auto_do(task_id: int) -> str:

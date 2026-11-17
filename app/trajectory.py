@@ -8,6 +8,8 @@ from pathlib import Path
 CONTINUE_WORDS = {'继续', '继续吧', '请继续', '接着做', 'continue', 'go on'}
 SUBAGENT_TOOLS = {'Agent', 'Task'}
 FILE_TOOLS = {'Edit', 'Write', 'NotebookEdit', 'MultiEdit'}
+# Claude Code 本地生成（没有请求模型）的助手消息写在 message.model 里的值，甲方质检按模型不符判不通过
+SYNTHETIC_MODEL = '<synthetic>'
 
 
 def encode_project_dir(cwd: str) -> str:
@@ -72,6 +74,8 @@ def parse(path: Path) -> dict:
         'skill_calls': [],
         # 主链上的接口报错文本（如 API Error: bad response status code 504），按出现顺序
         'api_errors': [],
+        # 主链上客户端自己写入的助手消息条数：接口报错占位、被打断后的占位等，model 为 <synthetic>
+        'synthetic': 0,
         'prompts': human_prompts(rows), 'final_text': '', 'last_timestamp': None,
     }
     for r in rows:
@@ -88,9 +92,11 @@ def parse(path: Path) -> dict:
                 info['skills'] = list(a['names'])
         if r.get('type') == 'assistant' and not r.get('isSidechain'):
             m = r.get('message') or {}
-            if r.get('isApiErrorMessage'):
-                texts = [x.get('text', '') for x in m.get('content') or [] if isinstance(x, dict)]
-                info['api_errors'].append(' '.join(t for t in texts if t)[:300])
+            if r.get('isApiErrorMessage') or m.get('model') == SYNTHETIC_MODEL:
+                info['synthetic'] += 1
+                if r.get('isApiErrorMessage'):
+                    texts = [x.get('text', '') for x in m.get('content') or [] if isinstance(x, dict)]
+                    info['api_errors'].append(' '.join(t for t in texts if t)[:300])
                 continue
             if m.get('model'):
                 info['models'][m['model']] += 1
@@ -218,6 +224,10 @@ def validate(info: dict, prompt: str, expected_model: str | None,
         if bad:
             errors.append(f'存在追问或纠错输入 {len(bad)} 条：' + _norm(bad[0]['text'])[:60])
     errors += forbidden_calls(info, builtin_skills)
+    if info.get('synthetic'):
+        cause = f"接口报错中断 {len(info['api_errors'])} 次" if info['api_errors'] else '会话被打断'
+        errors.append(f"轨迹含 {info['synthetic']} 条 model 为 {SYNTHETIC_MODEL} 的客户端占位消息（{cause}），"
+                      f'甲方质检按模型不符判不通过，需要作废会话重做')
     extra_skills = sorted(set(info['skills']) - set(builtin_skills))
     if extra_skills:
         errors.append('skill 列表含非内置 skill：' + ', '.join(extra_skills))

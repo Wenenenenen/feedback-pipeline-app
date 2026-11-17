@@ -447,17 +447,15 @@ def _local_time(ts: str | None) -> str | None:
     return t.astimezone().strftime('%Y-%m-%d %H:%M:%S')
 
 
-def interrupt_remark(info: dict, continue_count: int) -> str:
-    """有「继续」时追加到备注草稿的中断说明：区分接口报错中断（带状态码）与无报错停止。"""
+def interrupt_remark(continue_count: int) -> str:
+    """有「继续」时追加到备注草稿的中断说明。
+
+    接口报错中断的轨迹会留下 model 为 <synthetic> 的占位消息，收集校验直接拦下要求重做，
+    能走到这里的「继续」只可能是模型无报错停止。
+    """
     if not continue_count:
         return ''
-    errs = info.get('api_errors') or []
-    if errs:
-        codes = sorted({m.group(1) for e in errs if (m := re.search(r'\b([45]\d\d)\b', e))})
-        cause = f"模型中途因接口报错{' '.join(codes)}中断{len(errs)}次" if codes else f'模型中途因接口报错中断{len(errs)}次'
-    else:
-        cause = '模型中途无报错停止'
-    return f' {cause} 人工输入继续{continue_count}次后完成 prompt与promptid取第一轮'
+    return f' 模型中途无报错停止 人工输入继续{continue_count}次后完成 prompt与promptid取第一轮'
 
 
 def start_collect(task_id: int, summary: str = '') -> str:
@@ -483,7 +481,7 @@ def start_collect(task_id: int, summary: str = '') -> str:
         shutil.copy2(path, copy)
         log(f'轨迹已留存 {config.unc(copy)}')
         traj_summary = trajectory.summarize(path)
-        remark = ((t['remark'] or '') + interrupt_remark(info, v['continue_count'])).strip()
+        remark = ((t['remark'] or '') + interrupt_remark(v['continue_count'])).strip()
         models = info['requested_models'] or info['models']
         db.update_task(
             task_id, session_id=info['session_id'], prompt_id=info['prompts'][0]['prompt_id'],
