@@ -44,7 +44,8 @@ export default async function run(ctx) {
 `ctx` 提供：
 
 - `ctx.page`：产物页面（Playwright Page），`ctx.context`：浏览器上下文；`run` 里只用它读页面状态、等待元素或文字出现，不用它做动作；
-- `ctx.click(目标, {dx, dy, button, clickCount, hover})`：系统指针移过去再真实点击；目标可以是选择器字符串、Locator 或页面坐标 `{x, y}`；选择器目标的落点在中心附近随机，需要精确落点时给 `dx`、`dy`（相对中心）或页面坐标；点按钮、链接、下拉框、画布一律用它，不要用 `locator.click()` 或 `page.mouse`（那样画面上的指针不会动）；
+- `ctx.click(目标, {dx, dy, button, clickCount, hover})`：系统指针移过去再真实点击；目标可以是选择器字符串、Locator 或页面坐标 `{x, y}`；选择器目标的落点在中心附近随机，需要精确落点时给 `dx`、`dy`（相对中心）或页面坐标；点按钮、链接、画布、自己画的下拉菜单一律用它，不要用 `locator.click()` 或 `page.mouse`（那样画面上的指针不会动）；
+- `ctx.select(目标, 选项)`：原生下拉框（`<select>`）选一项：点开下拉框，指针移到列表里的目标项上点击，与人一样；选项写 value 或显示文字，也可以写 `{value}`、`{label}`、`{index}`；没选中会抛错。原生下拉框一律用它，不要用 `ctx.click` 点开后按 `End`、`Home` 或回车（画面上会直接跳到目标项，不像人操作），也不要用 `selectOption`；
 - `ctx.moveTo(目标, {dx, dy, ms})`：只移动指针（悬停提示、悬停高亮），落点规则同上；
 - `ctx.type(目标, 文字)`：点中输入框后逐字输入，节奏有快有慢；
 - `ctx.key(按键)`：系统按键，xdotool 写法，如 `ctrl+a`、`Return`、`Delete`，发给当前窗口；
@@ -81,7 +82,7 @@ await ctx.upload('text=导入文件', `${ctx.cwd}/.qa/broken.wav`);
 
 - `run` 部分在时长上限减 5 秒内结束，按录屏步骤的顺序逐步执行，每步开头调用 `ctx.step`；每个现象出现后 `ctx.sleep(1500)` 到 `3000` 让画面停留，整体节奏不要太快也不要拖。
 - 只录 Feedback 里写到的内容，失败项照录；不在录屏里跑临时脚本、注入控制台脚本或改页面状态，证据放在页面上的正常操作里。录屏步骤本身要求使用控制台脚本定位精确像素时，用 `ctx.page.evaluate` 执行。
-- `run` 里不用 `page.reload`、`page.goto`、`locator.click`、`locator.fill`、`setInputFiles`、`page.keyboard` 做动作（画面上看不到对应的操作，一看就是脚本），分别换成 `ctx.reload`、`ctx.goto`、`ctx.click`、`ctx.type`、`ctx.upload`、`ctx.key`；`prepare` 不录，可以随意用。
+- `run` 里不用 `page.reload`、`page.goto`、`locator.click`、`locator.fill`、`selectOption`、`setInputFiles`、`page.keyboard` 做动作（画面上看不到对应的操作，一看就是脚本），分别换成 `ctx.reload`、`ctx.goto`、`ctx.click`、`ctx.type`、`ctx.select`、`ctx.upload`、`ctx.key`；`prepare` 不录，可以随意用。
 - 不调用 `page.pause`、不等待人工输入，不打开新的浏览器，不改动录屏目录里的已提交文件；脚本里不写死试跑生成的临时数据。
 - 以下情况无法自动录屏，`manual_needed` 设为 true，`reason` 写清原因，`script` 给空字符串：
   - 正式录制也在虚拟屏、现象又依赖真显卡（如 WebGPU 渲染、软件渲染下帧率过低导致无法展示问题）且没有替代展示方式；正式录制在本机桌面时有真显卡，不按这条判人工：操作步骤照常写，试跑时看不到的渲染结果，相关的检查用 `if (!ctx.dryRun)` 包起来只在正式录制时做，`reason` 里注明哪些现象试跑时无法核对；

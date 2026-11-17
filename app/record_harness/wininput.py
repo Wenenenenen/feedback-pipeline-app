@@ -4,7 +4,7 @@
 两种用法：
 - 常驻：`python wininput.py serve`，标准输入每行一个 JSON 请求 {"id": n, "op": ...}，标准输出逐行回复
   {"id": n, "ok": true, ...}；开启 watch 后，检测到真人的鼠标键盘操作时另外输出 {"event": "user-input"}。
-- 单次：`python wininput.py idle|screen|windows`，输出一行 JSON 后退出（后端检查桌面是否空闲时用）。
+- 单次：`python wininput.py idle|screen|windows|quiet|quiet-restore`，输出一行 JSON 后退出（后端检查桌面是否空闲时用）。
 
 鼠标键盘一律用 SendInput 注入，并在 dwExtraInfo 打上标记；监听真人操作用低级钩子，
 带注入标记的事件不算真人操作。
@@ -12,10 +12,13 @@
 import contextlib
 import ctypes
 import json
+import os
 import sys
 import threading
 import time
+import uuid
 from ctypes import wintypes
+from pathlib import Path
 
 user32 = ctypes.WinDLL('user32', use_last_error=True)
 kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -262,14 +265,14 @@ def _exe_name(pid: int) -> str:
     return name
 
 
-def windows() -> list[dict]:
-    """可见的顶层窗口（有标题），按 Z 序从上到下。"""
+def windows(untitled: bool = False) -> list[dict]:
+    """可见的顶层窗口（有标题），按 Z 序从上到下；untitled 为真时也包括没有标题的（如下拉框弹出的列表）。"""
     out = []
 
     def cb(hwnd, _):
         if user32.IsWindowVisible(hwnd):
             info = _window_info(hwnd)
-            if info['title']:
+            if info['title'] or untitled:
                 out.append(info)
         return True
     user32.EnumWindows(WNDENUMPROC(cb), 0)
@@ -433,6 +436,88 @@ def awake(on: bool = True):
     kernel32.SetThreadExecutionState(0x80000000 | (0x00000003 if on else 0))
 
 
+# 勿扰：系统的 QuietHoursSettings（设置里「勿扰」与专注助手用的同一个接口），切到只允许闹钟的配置
+QUIET_CLSID = 'f53321fa-34f8-4b7f-b9a3-361877cb94cf'
+QUIET_IID = '6bff4732-81ec-4ffb-ae67-b6c1bc29631f'
+QUIET_ON = 'Microsoft.QuietHoursProfile.AlarmsOnly'
+# 开勿扰前的配置记在文件里：助手意外退出没来得及恢复时，下次启动先恢复
+QUIET_SAVE = Path(os.environ.get('LOCALAPPDATA') or Path.home()) / 'feedback-record' / 'quiet-restore.json'
+
+
+class _GUID(ctypes.Structure):
+    _fields_ = [('b', ctypes.c_ubyte * 16)]
+
+    @classmethod
+    def of(cls, s: str):
+        g = cls()
+        ctypes.memmove(g.b, uuid.UUID(s).bytes_le, 16)
+        return g
+
+
+def _quiet_profile(new: str | None = None) -> str:
+    """读出当前的勿扰配置名；给了 new 就先改成 new 再读。"""
+    ole32 = ctypes.WinDLL('ole32')
+    ole32.CoInitializeEx(None, 2)
+    obj = ctypes.c_void_p()
+    # CLSCTX_LOCAL_SERVER：由系统的通知服务实现
+    hr = ole32.CoCreateInstance(ctypes.byref(_GUID.of(QUIET_CLSID)), None, 4,
+                                ctypes.byref(_GUID.of(QUIET_IID)), ctypes.byref(obj))
+    if hr:
+        raise OSError(f'CoCreateInstance 0x{hr & 0xFFFFFFFF:08x}')
+    vtbl = ctypes.cast(ctypes.cast(obj, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+    get = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.POINTER(ctypes.c_wchar_p))(vtbl[3])
+    put = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_wchar_p)(vtbl[4])
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])
+    try:
+        if new:
+            hr = put(obj, new)
+            if hr:
+                raise OSError(f'设置勿扰失败 0x{hr & 0xFFFFFFFF:08x}')
+        s = ctypes.c_wchar_p()
+        hr = get(obj, ctypes.byref(s))
+        if hr:
+            raise OSError(f'读取勿扰失败 0x{hr & 0xFFFFFFFF:08x}')
+        return s.value or ''
+    finally:
+        release(obj)
+
+
+def _set_quiet(profile: str) -> str:
+    """改勿扰配置并确认生效：通知服务异步应用，两次修改挨得太近时后一次可能被吞掉，读回来不对就重设。"""
+    now = ''
+    for _ in range(5):
+        _quiet_profile(profile)
+        time.sleep(0.3)
+        now = _quiet_profile()
+        if now == profile:
+            break
+    return now
+
+
+def quiet(on: bool) -> dict:
+    """录屏期间开勿扰（其他程序的通知不弹出，进通知中心），录完恢复成原来的配置。
+    原来已经是只允许闹钟就不动，也不恢复；原来是「仅优先通知」的也切过来，优先名单里的程序同样会弹。"""
+    if on:
+        cur = _quiet_profile()
+        if cur == QUIET_ON:
+            return {'was': cur, 'now': cur}
+        QUIET_SAVE.parent.mkdir(parents=True, exist_ok=True)
+        QUIET_SAVE.write_text(json.dumps({'profile': cur}), encoding='utf-8')
+        return {'was': cur, 'now': _set_quiet(QUIET_ON)}
+    return quiet_restore()
+
+
+def quiet_restore() -> dict:
+    """恢复开勿扰前的配置（没有记录就什么都不做）。"""
+    try:
+        prev = json.loads(QUIET_SAVE.read_text(encoding='utf-8')).get('profile')
+    except (OSError, ValueError):
+        return {}
+    now = _set_quiet(prev) if prev else ''
+    QUIET_SAVE.unlink(missing_ok=True)
+    return {'now': now}
+
+
 class Watcher(threading.Thread):
     """低级鼠标键盘钩子：出现不带注入标记的事件（真人操作）时输出 user-input 事件。"""
 
@@ -484,7 +569,9 @@ def handle(req: dict):
     elif op == 'text':
         text(req['text'], req.get('delays'))
     elif op == 'windows':
-        return {'windows': windows()}
+        return {'windows': windows(bool(req.get('untitled')))}
+    elif op == 'quiet':
+        return quiet(bool(req.get('on', True)))
     elif op == 'child_rect':
         return {'rect': child_rect(int(req['hwnd']), req['class'])}
     elif op == 'foreground':
@@ -515,16 +602,24 @@ def handle(req: dict):
 
 
 def serve():
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        req = json.loads(line)
-        try:
-            emit({'id': req.get('id'), 'ok': True, **(handle(req) or {})})
-        except Exception as e:  # noqa: BLE001 - 出错原样回给执行器
-            emit({'id': req.get('id'), 'ok': False, 'error': f'{type(e).__name__}: {e}'})
-    awake(False)
+    # 上次录屏的助手意外退出、勿扰没恢复的，先恢复
+    with contextlib.suppress(Exception):
+        quiet_restore()
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            req = json.loads(line)
+            try:
+                emit({'id': req.get('id'), 'ok': True, **(handle(req) or {})})
+            except Exception as e:  # noqa: BLE001 - 出错原样回给执行器
+                emit({'id': req.get('id'), 'ok': False, 'error': f'{type(e).__name__}: {e}'})
+    finally:
+        # 执行器退出（标准输入关闭）时兜底：恢复勿扰与屏幕常亮
+        with contextlib.suppress(Exception):
+            quiet_restore()
+        awake(False)
 
 
 def main():
@@ -545,6 +640,11 @@ def main():
         emit(screen())
     elif cmd == 'windows':
         emit({'windows': windows()})
+    elif cmd == 'quiet':
+        # 查看当前勿扰配置；quiet-restore 恢复录屏前的配置
+        emit({'profile': _quiet_profile()})
+    elif cmd == 'quiet-restore':
+        emit(quiet_restore())
     else:
         raise SystemExit(f'未知命令：{cmd}')
 

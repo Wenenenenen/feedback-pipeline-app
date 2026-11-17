@@ -6,6 +6,7 @@
 //
 // 用法：node harness.mjs --script <录屏脚本.mjs> --cwd <录屏目录（WSL 路径）> --work <工作目录>
 //         [--platform x11|win] [--out <输出.mp4>] [--dry-run] [--max-sec 90] [--audio <x11 的 pulse 音源 | win 的 1>]
+//         [--out-height 720]（输出视频的高度，屏幕更高时按比例缩小）
 //         x11：[--size 1920x1080] [--work-size 1920x1032] [--pw <playwright 模块路径>]
 //         win：--pw <playwright-core 路径> --python <python.exe> --ffmpeg <ffmpeg.exe> --ffprobe <ffprobe.exe>
 //              --chrome <chrome.exe> --root <Windows 侧运行目录> --distro <WSL 发行版>
@@ -26,13 +27,14 @@ const require = createRequire(import.meta.url);
 const EXIT_USER_INPUT = 3;
 
 function parseArgs(argv) {
-  const a = { dryRun: false, maxSec: 90, audio: '', platform: 'x11' };
+  const a = { dryRun: false, maxSec: 90, audio: '', platform: 'x11', outHeight: 720 };
   const size = s => { const [W, H] = String(s).split('x').map(Number); return { W, H }; };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     const v = () => argv[++i];
     if (k === '--dry-run') a.dryRun = true;
     else if (k === '--max-sec') a.maxSec = Number(v());
+    else if (k === '--out-height') a.outHeight = Number(v());
     else if (k === '--size') a.size = size(v());
     else if (k === '--work-size') a.workSize = size(v());
     else if (k.startsWith('--')) a[k.slice(2).replace(/-(\w)/g, (_, c) => c.toUpperCase())] = v();
@@ -60,8 +62,9 @@ function run(cmd, args, opts = {}) {
   });
 }
 
-// 合成：两路都保留墙钟时间戳，按起始时刻对齐，声音晚开始就在前面补静音、早开始就裁掉多出的开头
-async function mux(capture, out) {
+// 合成：两路都保留墙钟时间戳，按起始时刻对齐，声音晚开始就在前面补静音、早开始就裁掉多出的开头；
+// 画面按屏幕原尺寸录，合成时缩到 outHeight（作业要求 720p），宽度按比例取偶数
+async function mux(capture, out, outHeight) {
   const probe = async (file, entries) => Number((await run(capture.ffprobe, ['-v', 'error', '-show_entries', entries,
     '-of', 'default=nw=1:nk=1', file])).trim().split('\n')[0]);
   const { files } = capture;
@@ -78,6 +81,8 @@ async function mux(capture, out) {
     if (offset > 0) ff.push('-af', `adelay=${Math.round(offset * 1000)}:all=1`);
     ff.push('-c:a', 'aac', '-b:a', '128k');
   }
+  const vH = await probe(files.video, 'stream=height');
+  if (outHeight && vH > outHeight) ff.push('-vf', `scale=-2:${outHeight}:flags=lanczos`);
   ff.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30',
     '-t', vDur.toFixed(3), '-movflags', '+faststart', out);
   await run(capture.ffmpeg, ff, { timeout: 600000 });
@@ -233,6 +238,97 @@ async function main() {
         await b.key('Return');
       }, opts);
     },
+    // 原生下拉框（<select>）选一项：点开下拉框，指针移到列表里的目标项上再点，与人一样；
+    // 找不到弹出列表（虚拟屏）或列表长到要滚动时，改用方向键一格一格移过去再回车，不会一下跳到目标项。
+    // option 是选项的 value 或显示文字，也可以写 {value}、{label}、{index}
+    async select(t, option, opts = {}) {
+      await ensureBrowser();
+      const loc = target(t);
+      await loc.scrollIntoViewIfNeeded();
+      const info = () => loc.evaluate((el, want) => {
+        if (el.tagName !== 'SELECT') return { error: '目标不是 <select> 元素' };
+        const opts = [...el.options];
+        const shown = o => !o.hidden && getComputedStyle(o).display !== 'none';
+        let hit;
+        if (want && typeof want === 'object') {
+          if (want.index !== undefined) hit = opts[want.index];
+          else if (want.value !== undefined) hit = opts.find(o => o.value === String(want.value));
+          else hit = opts.find(o => o.label.trim() === String(want.label).trim());
+        } else {
+          hit = opts.find(o => o.value === String(want)) || opts.find(o => o.label.trim() === String(want).trim());
+        }
+        if (!hit) return { error: `下拉框里没有选项 ${JSON.stringify(want)}` };
+        // 弹出列表里的每一行：分组标题也占一行，隐藏的选项不显示
+        const rows = [];
+        for (const c of el.children) {
+          if (c.tagName === 'OPTGROUP') {
+            if (getComputedStyle(c).display === 'none') continue;
+            rows.push(null);
+            for (const o of c.children) if (o.tagName === 'OPTION' && shown(o)) rows.push(o);
+          } else if (c.tagName === 'OPTION' && shown(c)) rows.push(c);
+        }
+        const enabled = o => o && !o.disabled && !(o.parentElement.tagName === 'OPTGROUP' && o.parentElement.disabled);
+        if (!enabled(hit)) return { error: `选项 ${JSON.stringify(want)} 是禁用的` };
+        const cur = el.options[el.selectedIndex];
+        const from = rows.indexOf(cur);
+        const to = rows.indexOf(hit);
+        // 方向键要按几下：两行之间（含目标）可选的选项数，向上为负
+        let steps = 0;
+        if (from >= 0) {
+          const [a, b] = from < to ? [from + 1, to] : [to, from - 1];
+          for (let i = a; i <= b; i++) if (enabled(rows[i])) steps += 1;
+          if (from > to) steps = -steps;
+        } else steps = rows.slice(0, to + 1).filter(enabled).length;
+        return { listbox: el.multiple || el.size > 1, index: hit.index, row: to, rows: rows.length, steps };
+      }, option);
+      let s = await info();
+      if (s.error) throw new Error(s.error);
+      if (s.listbox) {
+        // 列表框（size>1 或多选）的选项直接画在页面里，像按钮一样点
+        await ctx.click(loc.locator('option').nth(s.index), opts);
+        return;
+      }
+      const before = b.beforePopup ? await b.beforePopup() : null;
+      await ctx.click(loc, opts);
+      await sleep(rand(250, 450));
+      const rect = before ? await b.popupRect(before) : null;
+      let done = false;
+      if (rect && s.rows <= 20) {
+        // 列表最多显示 20 行，不滚动时各行等高，按行号算出目标项的位置
+        const [l, tp, r, bt] = rect;
+        const rowH = (bt - tp) / s.rows;
+        if (rowH >= 12) {
+          const y = tp + rowH * (s.row + 0.5 + clamp(gauss() * 0.12, -0.25, 0.25));
+          await human.moveTo(l + (r - l) * rand(0.2, 0.55), y);
+          await sleep(rand(250, 500));
+          await human.click();
+          await sleep(rand(250, 400));
+          done = (await loc.evaluate(el => el.selectedIndex)) === s.index;
+          if (!done) {
+            emit('select-retry', { option });
+            // 点偏了：列表还开着就先关掉，再用方向键选
+            if (await b.popupRect(before, 200)) await b.key('Escape');
+            await sleep(rand(200, 350));
+            s = await info();
+            await ctx.click(loc, opts);
+            await sleep(rand(250, 450));
+          }
+        }
+      }
+      if (!done) {
+        // 方向键一格一格移到目标项，再回车确认
+        for (let i = 0; i < Math.abs(s.steps); i++) {
+          await b.key(s.steps > 0 ? 'Down' : 'Up');
+          await sleep(rand(160, 300));
+        }
+        await sleep(rand(150, 300));
+        await b.key('Return');
+        await sleep(rand(200, 350));
+      }
+      if ((await loc.evaluate(el => el.selectedIndex)) !== s.index) {
+        throw new Error(`下拉框没有选中 ${JSON.stringify(option)}`);
+      }
+    },
     // 点上传按钮，在弹出的系统文件选择框里选文件
     async upload(t, file, opts = {}) {
       const files = Array.isArray(file) ? file : [file];
@@ -320,7 +416,7 @@ async function main() {
   if (interrupted) process.exit(EXIT_USER_INPUT);
   if (failed) process.exit(1);
   if (capture) {
-    await mux(capture, args.out);
+    await mux(capture, args.out, args.outHeight);
     emit('muxed', { out: args.out });
   }
   emit('done', { ok: true });

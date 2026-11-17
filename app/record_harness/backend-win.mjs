@@ -2,6 +2,7 @@
 // 由 wininput.py 用 SendInput 驱动系统指针与键盘，ffmpeg gfxcapture（Windows.Graphics.Capture，指针由系统合成，
 // 与系统自带录屏一致；ddagrab 画自定义指针会带白框）录主屏，winaudio.py 录系统声音。
 // 执行器在 Windows 的 node 里运行；录屏目录、录屏脚本里的路径仍是 WSL 路径。
+// 录制期间开系统勿扰（其他程序的通知不弹出），录完恢复原来的设置。
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -150,6 +151,13 @@ export async function createBackend(args, emit) {
     if (wk.running) throw new Error('屏保没有退出');
     if (wk.locked) throw new Error('桌面已锁屏（屏保设了恢复时显示登录屏幕也会这样），锁屏时录不到画面');
     await helper.req('awake', { on: true });
+    // 开勿扰：其他程序的通知不弹出来挡住画面（进通知中心，录完恢复原来的设置）；开不了只记一笔，照常录
+    try {
+      const q = await helper.req('quiet', { on: true });
+      emit('quiet', { was: q.was, now: q.now });
+    } catch (e) {
+      emit('quiet-failed', { message: String(e.message || e).slice(0, 300) });
+    }
     await helper.req('watch');
     fs.mkdirSync(staging, { recursive: true });
     const term = await startTerminal();
@@ -275,6 +283,20 @@ export async function createBackend(args, emit) {
     return true;
   };
 
+  // 原生下拉框：Chrome 把展开的选项列表画在一个单独的无标题弹出窗口里。点开前记下已有窗口，
+  // 点开后找新出现的 Chrome 窗口，返回它的屏幕矩形（找不到为 null，由执行器改用方向键逐项选）
+  b.beforePopup = async () => new Set((await helper.req('windows', { untitled: true })).windows.map(w => w.hwnd));
+  b.popupRect = async (before, timeoutMs = 1500) => {
+    const end = Date.now() + timeoutMs;
+    while (Date.now() < end) {
+      const w = (await helper.req('windows', { untitled: true })).windows.find(x => !before.has(x.hwnd)
+        && x.exe === 'chrome.exe' && !x.title && x.rect[2] - x.rect[0] > 20 && x.rect[3] - x.rect[1] > 10);
+      if (w) return w.rect;
+      await sleep(80);
+    }
+    return null;
+  };
+
   b.exec = (cmd, timeoutSec = 30) => new Promise(resolve => {
     execFile('wsl.exe', ['-d', args.distro, '--cd', args.cwd, '--', 'bash', '-lc', cmd],
       { timeout: timeoutSec * 1000, encoding: 'utf8' },
@@ -349,6 +371,7 @@ export async function createBackend(args, emit) {
     // 删掉复制进「下载」的文件，暂存目录空了就一起删
     for (const f of staged) fs.rmSync(f, { force: true });
     try { fs.rmdirSync(staging); } catch { /* 目录里还有别的文件，保留 */ }
+    await helper.req('quiet', { on: false }).catch(() => {});
     await helper.req('awake', { on: false }).catch(() => {});
     helper.stop();
   };

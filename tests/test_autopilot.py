@@ -627,6 +627,15 @@ def test_check_video(tmp_path, monkeypatch):
         recorder.check_video(f, 90, (1920, 1080))
 
 
+def test_out_size():
+    # 作业要求 720p：屏幕更高时按比例缩到 720，宽度取偶数；不高于 720 的不放大
+    assert recorder.out_size(1920, 1080) == (1280, 720)
+    assert recorder.out_size(2560, 1440) == (1280, 720)
+    assert recorder.out_size(1366, 768) == (1280, 720)
+    assert recorder.out_size(1280, 720) == (1280, 720)
+    assert recorder.out_size(1024, 640) == (1024, 640)
+
+
 def test_record_manual_needed_from_cache(data_dir, monkeypatch):
     from app import envcheck
     monkeypatch.setattr(envcheck, 'record_tools_missing', lambda audio: [])

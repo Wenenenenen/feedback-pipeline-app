@@ -27,7 +27,9 @@ from . import codex_runner, config, db, envcheck, jobs, pipeline as P, submissio
 
 HARNESS = Path(__file__).resolve().parent / 'record_harness' / 'harness.mjs'
 # 执行器接口版本：ctx 的用法有变化时加一，缓存的旧录屏脚本随之作废、重新生成
-HARNESS_API = 3
+HARNESS_API = 4
+# 录屏文件的高度（作业要求 720p）：屏幕更高时合成时按比例缩小
+OUT_HEIGHT = 720
 SINK = 'fbrec'
 # 执行器检测到真人操作电脑而中止时的退出码
 EXIT_USER_INPUT = 3
@@ -416,7 +418,7 @@ def run_harness(script: Path, rdir: Path, env: dict, vs: VirtualScreen, out: Pat
                 log, stop) -> None:
     """在虚拟屏上执行录屏脚本：out 为空时只试跑。"""
     cmd = ['node', str(HARNESS), '--script', str(script), '--cwd', str(rdir), '--work', str(vs.work / 'final'),
-           '--max-sec', str(max_sec), *harness_size_args(vs.size)]
+           '--max-sec', str(max_sec), '--out-height', str(OUT_HEIGHT), *harness_size_args(vs.size)]
     if out:
         cmd += ['--out', str(out)]
         if vs.audio:
@@ -448,7 +450,8 @@ def run_desktop_harness(script_text: str, rdir: Path, run_key: str, attempt: int
     out = wsl_work / 'record.mp4'
     cmd = [wintools.exe(tools['node']), config.win_path(HARNESS), '--platform', 'win',
            '--script', f'{win_work}\\record.mjs', '--cwd', str(rdir), '--work', win_work,
-           '--out', f'{win_work}\\record.mp4', '--max-sec', str(max_sec), '--audio', '1' if audio else '0',
+           '--out', f'{win_work}\\record.mp4', '--max-sec', str(max_sec), '--out-height', str(OUT_HEIGHT),
+           '--audio', '1' if audio else '0',
            '--pw', tools['pw'], '--python', tools['python'], '--ffmpeg', tools['ffmpeg'],
            '--ffprobe', tools['ffprobe'], '--chrome', tools['chrome'], '--root', tools['root'],
            '--distro', config.load()['wsl_distro']]
@@ -492,6 +495,13 @@ def wait_desktop_idle(idle_min: float, log, stop) -> float:
             log('等待桌面空闲：' + ('已锁屏，解锁后才能录（锁屏时画面录不到）' if st['locked']
                                    else f"有人在用电脑（{int(idle)} 秒前有操作），需空闲 {idle_min:g} 分钟"))
         stop.wait(min(30.0, max(5.0, need - idle)))
+
+
+def out_size(width: int, height: int) -> tuple[int, int]:
+    """录屏文件的尺寸：按屏幕原尺寸录，合成时高度缩到 OUT_HEIGHT（作业要求 720p），宽度按比例取偶数。"""
+    if height <= OUT_HEIGHT:
+        return width, height
+    return int(round(width * OUT_HEIGHT / height / 2)) * 2, OUT_HEIGHT
 
 
 def check_video(path: Path, max_sec: int, size: tuple[int, int]) -> dict:
@@ -594,7 +604,6 @@ def run_record(task_id: int, run_key: str, log, stop):
             fresh = False
         if desktop:
             out = record_on_desktop(task_id, cache['script'], env, vs, run_key, log, stop)
-            rec_size = (size['width'], size['height'])
         else:
             if not fresh:
                 log('试跑过录屏脚本，重新克隆录屏目录')
@@ -608,8 +617,7 @@ def run_record(task_id: int, run_key: str, log, stop):
                 run_harness(script, rdir, env, vs, out, max_sec, log, stop)
             finally:
                 cleanup(t, rdir, env, vs, log)
-            rec_size = (size['width'], size['height'])
-    info = check_video(out, max_sec, rec_size)
+    info = check_video(out, max_sec, out_size(size['width'], size['height']))
     # 放到待上传目录，与轨迹同名（甲方序号-分支名）；重新录屏时覆盖旧文件
     dest = P.upload_dir() / f"{P.upload_stem(db.get_task(task_id))}.mp4"
     shutil.move(str(out), dest)
