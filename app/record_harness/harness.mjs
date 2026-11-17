@@ -288,6 +288,17 @@ async function main() {
         await ctx.click(loc.locator('option').nth(s.index), opts);
         return;
       }
+      // 记下选中的是哪一项：窗口上的捕获监听先于页面自己的处理执行（有的页面选完立刻把下拉框改回第一项，
+      // 事后读 selectedIndex 会误判）；选的就是当前项时不触发事件，按 selectedIndex 判断
+      const watchPick = () => loc.evaluate(el => {
+        el.__fbPicked = null;
+        if (!el.__fbWatch) {
+          el.__fbWatch = true;
+          window.addEventListener('input', e => { if (e.target === el) el.__fbPicked = el.selectedIndex; }, true);
+        }
+      });
+      const picked = () => loc.evaluate(el => el.__fbPicked ?? el.selectedIndex);
+      await watchPick();
       const before = b.beforePopup ? await b.beforePopup() : null;
       await ctx.click(loc, opts);
       await sleep(rand(250, 450));
@@ -303,13 +314,14 @@ async function main() {
           await sleep(rand(250, 500));
           await human.click();
           await sleep(rand(250, 400));
-          done = (await loc.evaluate(el => el.selectedIndex)) === s.index;
+          done = (await picked()) === s.index;
           if (!done) {
             emit('select-retry', { option });
             // 点偏了：列表还开着就先关掉，再用方向键选
             if (await b.popupRect(before, 200)) await b.key('Escape');
             await sleep(rand(200, 350));
             s = await info();
+            await watchPick();
             await ctx.click(loc, opts);
             await sleep(rand(250, 450));
           }
@@ -325,7 +337,7 @@ async function main() {
         await b.key('Return');
         await sleep(rand(200, 350));
       }
-      if ((await loc.evaluate(el => el.selectedIndex)) !== s.index) {
+      if ((await picked()) !== s.index) {
         throw new Error(`下拉框没有选中 ${JSON.stringify(option)}`);
       }
     },
