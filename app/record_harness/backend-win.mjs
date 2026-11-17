@@ -363,6 +363,8 @@ export async function createBackend(args, emit) {
       ffmpeg: args.ffmpeg,
       ffprobe: args.ffprobe,
       files,
+      // 画面时间戳是墙钟时间（-use_wallclock_as_timestamps），且只在画面变化时出帧，合成时要补结尾静止
+      wallclock: true,
       async stop() {
         await quit(video);
         await quit(audio);

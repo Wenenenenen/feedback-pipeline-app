@@ -22,6 +22,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { clamp, gauss, humanPath, rand, sleep, typingDelays } from './human.mjs';
+import { tailPad } from './muxutil.mjs';
 
 const require = createRequire(import.meta.url);
 const EXIT_USER_INPUT = 3;
@@ -64,13 +65,15 @@ function run(cmd, args, opts = {}) {
 
 // 合成：两路都保留墙钟时间戳，按起始时刻对齐，声音晚开始就在前面补静音、早开始就裁掉多出的开头；
 // 画面按屏幕原尺寸录，合成时缩到 outHeight（作业要求 720p），宽度按比例取偶数
-async function mux(capture, out, outHeight) {
+async function mux(capture, out, outHeight, stopWall = null) {
   const probe = async (file, entries) => Number((await run(capture.ffprobe, ['-v', 'error', '-show_entries', entries,
     '-of', 'default=nw=1:nk=1', file])).trim().split('\n')[0]);
   const { files } = capture;
   // 保留墙钟时间戳时，容器的 duration 是结束时刻，减去开始时刻才是时长
   const vStart = await probe(files.video, 'stream=start_time');
-  const vDur = (await probe(files.video, 'format=duration')) - vStart;
+  let vDur = (await probe(files.video, 'format=duration')) - vStart;
+  const tail = capture.wallclock ? tailPad(stopWall, vStart, vDur) : 0;
+  if (tail) emit('tail-pad', { seconds: tail });
   const ff = ['-y', '-loglevel', 'error', '-i', files.video];
   const aStart = await capture.audioStart(probe);
   if (aStart !== null && fs.existsSync(files.audio)) {
@@ -82,7 +85,14 @@ async function mux(capture, out, outHeight) {
     ff.push('-c:a', 'aac', '-b:a', '128k');
   }
   const vH = await probe(files.video, 'stream=height');
-  if (outHeight && vH > outHeight) ff.push('-vf', `scale=-2:${outHeight}:flags=lanczos`);
+  const vf = [];
+  if (outHeight && vH > outHeight) vf.push(`scale=-2:${outHeight}:flags=lanczos`);
+  // 结尾静止的停留用最后一帧补齐，声音本来就录到了停止时刻
+  if (tail) {
+    vf.push(`tpad=stop_mode=clone:stop_duration=${tail}`);
+    vDur += tail;
+  }
+  if (vf.length) ff.push('-vf', vf.join(','));
   ff.push('-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-r', '30',
     '-t', vDur.toFixed(3), '-movflags', '+faststart', out);
   await run(capture.ffmpeg, ff, { timeout: 600000 });
@@ -429,6 +439,7 @@ async function main() {
   if (typeof mod.default !== 'function') throw new Error('录屏脚本需要 export default async function run(ctx)');
 
   let capture = null;
+  let stopWall = null;
   let failed = null;
   try {
     await b.raise('browser');
@@ -457,6 +468,8 @@ async function main() {
     if (!interrupted) await grab(path.join(shotDir, 'error.png')).catch(() => {});
   } finally {
     if (capture) {
+      // 停止录制的墙钟时刻（秒），合成时据此补足结尾静止的画面
+      stopWall = Date.now() / 1000;
       await capture.stop();
       emit('record-stop');
     }
@@ -465,7 +478,7 @@ async function main() {
   if (interrupted) process.exit(EXIT_USER_INPUT);
   if (failed) process.exit(1);
   if (capture) {
-    await mux(capture, args.out, args.outHeight);
+    await mux(capture, args.out, args.outHeight, stopWall);
     emit('muxed', { out: args.out });
   }
   emit('done', { ok: true });
