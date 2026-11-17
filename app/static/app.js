@@ -929,7 +929,10 @@ const CONFIG_FIELDS = [
   ['do_auto_continue_max', '接口报错自动继续次数（做题时遇到 504 529 等接口报错中断 自动输入「继续」的次数上限 0 表示不自动继续 直接停下）', 'number'],
   ['do_continue_wait_sec', '接口报错后等待（秒，等这么久再输入「继续」）', 'number'],
   ['record_max_sec', '自动录屏时长上限（秒）', 'number'],
-  ['record_audio', '自动录屏录制声音（需要 WSL 中安装 pulseaudio）', 'checkbox'],
+  ['record_audio', '自动录屏录制声音（虚拟屏需要 WSL 中安装 pulseaudio 本机桌面需要 Windows 的 pyaudiowpatch）', 'checkbox'],
+  ['record_desktop', '自动录屏在本机桌面录制（用本机 Chrome Windows Terminal 和真实文件对话框 画面与真人录屏一致 只在桌面空闲时录 有人碰鼠标键盘立即中止 关闭时在 WSL 虚拟屏后台录制）', 'checkbox'],
+  ['record_idle_min', '本机桌面录制前的空闲时长（分钟 没有鼠标键盘操作且没锁屏达到这么久才开录）', 'number'],
+  ['record_user_retries', '本机桌面录制被打断后的重录次数', 'number'],
 ];
 
 async function loadConfig() {

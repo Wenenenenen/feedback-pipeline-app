@@ -578,13 +578,13 @@ def test_check_video(tmp_path, monkeypatch):
     from app import submission
     f = tmp_path / 'a.mp4'
     with pytest.raises(recorder.RecordError):
-        recorder.check_video(f, 90)
+        recorder.check_video(f, 90, (1920, 1080))
     f.write_bytes(b'x')
-    monkeypatch.setattr(submission, '_probe', lambda p: {'duration': 61.0, 'width': 1280, 'height': 720})
-    assert recorder.check_video(f, 90)['duration'] == 61.0
-    monkeypatch.setattr(submission, '_probe', lambda p: {'duration': 95.0, 'width': 1920, 'height': 1080})
+    monkeypatch.setattr(submission, '_probe', lambda p: {'duration': 61.0, 'width': 1920, 'height': 1080})
+    assert recorder.check_video(f, 90, (1920, 1080))['duration'] == 61.0
+    monkeypatch.setattr(submission, '_probe', lambda p: {'duration': 95.0, 'width': 1280, 'height': 720})
     with pytest.raises(recorder.RecordError, match='时长.*分辨率'):
-        recorder.check_video(f, 90)
+        recorder.check_video(f, 90, (1920, 1080))
 
 
 def test_record_manual_needed_from_cache(data_dir, monkeypatch):
@@ -606,7 +606,69 @@ def test_script_input_has_dryrun_and_paths(data_dir, tmp_path):
                    evidence=[{'phenomenon': '全黑', 'command': 'x', 'output_excerpt': 'y', 'recordable': True}])
     text = recorder.script_input(db.get_task(tid), tmp_path / 'rec', tmp_path / 'dryrun.sh', 'listening on 20100', 'rk1')
     assert 'dryrun.sh' in text and 'record.mjs' in text and '点渲染' in text and 'listening on 20100' in text
-    assert 'kill %1' in text and '1280x720' in text
+    assert 'kill %1' in text and '1920x1080' in text and '1920x1032' in text
+
+
+def test_wait_desktop_idle(monkeypatch):
+    """锁屏或有人在用电脑时一直等，空闲够久才返回；人工停止时抛错。"""
+    from app import wintools
+    states = iter([{'idle_sec': 900, 'locked': True}, {'idle_sec': 30, 'locked': False},
+                   {'idle_sec': 700, 'locked': False}])
+    monkeypatch.setattr(wintools, 'idle', lambda: next(states))
+    stop = threading.Event()
+    monkeypatch.setattr(stop, 'wait', lambda s: None)
+    logs = []
+    recorder.wait_desktop_idle(10, logs.append, stop)
+    assert any('锁屏' in m for m in logs) and logs[-1].startswith('桌面已空闲')
+    stop.set()
+    with pytest.raises(recorder.RecordError, match='人工停止'):
+        recorder.wait_desktop_idle(10, logs.append, stop)
+
+
+def test_desktop_idle_ignores_own_input(monkeypatch):
+    """上次录制结束后没人碰电脑：系统记的空闲只从录屏自己的输入算起，实际空闲从录制前算。"""
+    now = 10_000.0
+    monkeypatch.setattr(recorder.time, 'time', lambda: now)
+    monkeypatch.setattr(recorder, '_desk_idle', {'since': now - 1200, 'end': now - 60})
+    # 最后一次输入发生在录制结束前（录屏自己的输入）
+    assert recorder.desktop_idle_sec({'idle_sec': 62, 'locked': False}) == 1200
+    # 录制结束后有人动过电脑
+    assert recorder.desktop_idle_sec({'idle_sec': 20, 'locked': False}) == 20
+    monkeypatch.setattr(recorder, '_desk_idle', {})
+    assert recorder.desktop_idle_sec({'idle_sec': 62, 'locked': False}) == 62
+
+
+def test_record_on_desktop_retries_after_user_input(data_dir, monkeypatch, tmp_path):
+    """本机桌面录制被人打断：收尾后重新等空闲、重新克隆准备再录；次数用完报错。"""
+    from app import config, wintools
+    tid = new_task(status=P.S_RECORD, record_prep={'setup': '', 'cleanup': ''})
+    config.save({'record_idle_min': 1, 'record_user_retries': 2})
+    calls = {'clone': 0, 'run': 0}
+    monkeypatch.setattr(recorder, 'wait_desktop_idle', lambda m, log, stop: None)
+    monkeypatch.setattr(wintools, 'idle', lambda: {'idle_sec': 120, 'locked': False})
+
+    def clone(t, log):
+        calls['clone'] += 1
+        return tmp_path
+    monkeypatch.setattr(P, 'prepare_record_dir', clone)
+
+    def harness(*a, **k):
+        calls['run'] += 1
+        if calls['run'] <= 1:
+            raise recorder.UserInterrupted('录屏中检测到有人操作电脑，已中止')
+        return tmp_path / 'ok.mp4'
+    monkeypatch.setattr(recorder, 'run_desktop_harness', harness)
+
+    class VS:
+        work = tmp_path
+
+        def kill_services(self):
+            pass
+    out = recorder.record_on_desktop(tid, 'x', {}, VS(), 'rk', lambda m: None, threading.Event())
+    assert out == tmp_path / 'ok.mp4' and calls == {'clone': 2, 'run': 2}
+    calls.update(clone=0, run=-5)
+    with pytest.raises(recorder.RecordError, match='连续 2 次'):
+        recorder.record_on_desktop(tid, 'x', {}, VS(), 'rk', lambda m: None, threading.Event())
 
 
 def test_complete_clears_old_error(data_dir):

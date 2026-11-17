@@ -157,6 +157,9 @@ RECORD_TOOLS = [
     ('playwright', 'test -d "$(npm root -g)/playwright"', 'bash scripts/setup-verify-tools.sh'),
     ('chromium', 'ls -d ~/.cache/ms-playwright/chromium-* >/dev/null 2>&1', 'npx playwright install chromium'),
     ('中文字体', 'test "$(fc-list :lang=zh 2>/dev/null | wc -l)" -gt 0', 'sudo apt-get install -y fonts-noto-cjk'),
+    # 浏览器界面与系统文件选择框显示中文（与中文版 Windows 一致）
+    ('中文语言包', 'locale -a 2>/dev/null | grep -qix "zh_CN.utf-\\?8" && ls /usr/share/locale-langpack/zh_CN/LC_MESSAGES/gtk30.mo /usr/share/locale/zh_CN/LC_MESSAGES/gtk30.mo 2>/dev/null | grep -q .',
+     'sudo apt-get install -y language-pack-zh-hans language-pack-gnome-zh-hans'),
 ]
 AUDIO_TOOLS = [
     ('pulseaudio', 'command -v pulseaudio', 'sudo apt-get install -y pulseaudio（或在配置页关闭录制声音）'),
@@ -178,10 +181,22 @@ def tools_check(tools: list[tuple[str, str, str]]) -> list[dict]:
             for i, (name, _, fix) in enumerate(tools)]
 
 
+def _record_tools() -> list:
+    """录屏要检查的 WSL 工具；正式录制在本机桌面时虚拟屏只用来试跑，不要求中文语言包。"""
+    from . import config
+    if config.load().get('record_desktop'):
+        return [t for t in RECORD_TOOLS if t[0] != '中文语言包']
+    return RECORD_TOOLS
+
+
 def auto_tools_check(audio: bool) -> list[dict]:
-    """开始自动做题前的检查：做题与录屏需要的工具。"""
-    return tools_check(DO_TOOLS + RECORD_TOOLS + (AUDIO_TOOLS if audio else []))
+    """开始自动做题前的检查：做题与录屏需要的工具（在本机桌面录制时加上 Windows 侧的工具）。"""
+    from . import config, wintools
+    items = tools_check(DO_TOOLS + _record_tools() + (AUDIO_TOOLS if audio else []))
+    if config.load().get('record_desktop'):
+        items += wintools.check(audio)
+    return items
 
 
 def record_tools_missing(audio: bool) -> list[str]:
-    return [i['name'] for i in tools_check(RECORD_TOOLS + (AUDIO_TOOLS if audio else [])) if not i['ok']]
+    return [i['name'] for i in tools_check(_record_tools() + (AUDIO_TOOLS if audio else [])) if not i['ok']]

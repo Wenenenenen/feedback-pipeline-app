@@ -13,9 +13,13 @@ description: 把验收给出的录屏步骤写成可自动执行的录屏脚本�
 
 ## 录屏环境
 
-- 流水线已在 WSL 中起好一块 1280x720 的虚拟屏（不是 Windows 桌面），浏览器是 WSL 里的 chromium，有标签栏和地址栏，产物服务也在 WSL 里，页面用 `http://localhost:<端口>` 打开。
-- 画面没有真显卡：WebGL 走软件渲染，帧率偏低；WebGPU 多数情况不可用。
-- 屏幕上有两个铺满全屏的窗口：浏览器（产物页面）和终端（xterm，按 Windows Terminal 的配色与字体，提示符与新开 WSL 终端一致，当前目录就是录屏目录），同一时间只显示其中一个。指针是 Windows 样式的系统指针，由流水线驱动真实的鼠标移动和点击，悬停在链接上会变成手形。录制的就是整块虚拟屏，声音来自浏览器和终端命令。
+- 试跑与正式录制在两个地方，脚本同一份：
+  - 试跑：WSL 里的虚拟屏（尺寸与本机主屏一致，见输入的「录屏环境」），浏览器是 WSL 里的 chromium，终端是按 Windows Terminal 配色的 xterm，文件选择框是 GTK 样式；没有真显卡，WebGL 走软件渲染、帧率偏低，WebGPU 多数情况不可用。
+  - 正式录制（输入里写明是「Windows 本机桌面」时）：Windows 主屏上的本机 Chrome、Windows Terminal 里的 WSL、Windows 文件对话框，有真显卡，WebGL、WebGPU 正常；录的是整个主屏（含任务栏）和系统声音。输入写明正式录制也在虚拟屏时，环境与试跑相同。
+- 产物服务在 WSL 里，两边都用 `http://localhost:<端口>` 打开。浏览器和终端各占满工作区（去掉任务栏的部分），同一时间只显示其中一个，终端当前目录就是录屏目录。
+- 指针、键盘由流水线按人手的方式驱动（弧线、先快后慢、落点在元素中心附近随机，打字有快有慢），录的就是真实的指针与窗口。
+- 网页可能有缩放（`devicePixelRatio` 不是 1），也可能和试跑时差几个像素：元素一律用选择器定位；必须点画布上的某个位置时，用页面坐标 `{x, y}` 并按画布的实际尺寸计算，不要写死试跑截图里量出来的屏幕坐标。
+- 录屏要看起来是人在操作：画面上发生的每个动作都要由指针、键盘触发（点按钮、点刷新、在弹出的文件选择框里选文件），不能凭空发生。
 - 录屏前准备已经执行完，不要在脚本里再安装依赖、启动或结束服务；录完收尾由流水线执行。
 
 ## 脚本接口
@@ -39,24 +43,31 @@ export default async function run(ctx) {
 
 `ctx` 提供：
 
-- `ctx.page`：产物页面（Playwright Page），`ctx.context`：浏览器上下文；
-- `ctx.click(目标, {dx, dy, button, clickCount, hover})`：系统指针平滑移过去再真实点击；目标可以是选择器字符串、Locator 或页面坐标 `{x, y}`；点按钮、链接、下拉框、画布一律用它，不要用 `locator.click()` 或 `page.mouse`（那样画面上的指针不会动）；
-- `ctx.moveTo(目标, {dx, dy, ms})`：只移动指针（悬停提示、悬停高亮）；
-- `ctx.type(目标, 文字)`：点中输入框后逐字输入；
+- `ctx.page`：产物页面（Playwright Page），`ctx.context`：浏览器上下文；`run` 里只用它读页面状态、等待元素或文字出现，不用它做动作；
+- `ctx.click(目标, {dx, dy, button, clickCount, hover})`：系统指针移过去再真实点击；目标可以是选择器字符串、Locator 或页面坐标 `{x, y}`；选择器目标的落点在中心附近随机，需要精确落点时给 `dx`、`dy`（相对中心）或页面坐标；点按钮、链接、下拉框、画布一律用它，不要用 `locator.click()` 或 `page.mouse`（那样画面上的指针不会动）；
+- `ctx.moveTo(目标, {dx, dy, ms})`：只移动指针（悬停提示、悬停高亮），落点规则同上；
+- `ctx.type(目标, 文字)`：点中输入框后逐字输入，节奏有快有慢；
+- `ctx.key(按键)`：系统按键，xdotool 写法，如 `ctrl+a`、`Return`、`Delete`，发给当前窗口；
+- `ctx.upload(目标, 文件路径)`：点上传按钮（`<input type=file>` 或会打开它的按钮、label），在弹出的系统文件选择框里选中文件；文件路径写录屏目录下的 WSL 路径，正式录制时流水线会先把它放进「下载」下以分支命名的文件夹，对话框打开在那里，在文件列表里双击这个文件；一次一个文件；
+- `ctx.reload()`：指针移到浏览器的刷新按钮点击，等页面加载完；`ctx.goto(网址)`：点地址栏、打出网址回车，等页面加载完；都可以加 `{waitUntil: 'networkidle'}`；
 - `ctx.scroll(格数)`：在浏览器里滚动鼠标滚轮，正数向下；
 - `ctx.term.run(命令, {timeout 秒, pause 毫秒})`：切到终端窗口，逐字打出命令并回车，等命令结束返回 `{code}`，命令失败不抛错；`ctx.term.show()` 只切到终端，`ctx.showBrowser()` 切回浏览器（之后的 click、moveTo 也会自动切回）；
 - `ctx.exec(命令, {timeout 秒})`：在录屏目录后台执行命令（不出现在画面上），返回 `{code, output}`，只用来在脚本里核对状态；
 - `ctx.step(序号, 说明)`：标记当前录到第几步，写进日志；
 - `ctx.sleep(毫秒)`：停顿，让画面上的结果停留看清；
-- `ctx.shot(名字)`：整块屏幕截图到试跑截图目录（含终端与指针；试跑时用来核对画面，正式录制时也会保存）；
+- `ctx.shot(名字)`：整块屏幕截图到试跑截图目录（含终端与指针；只在试跑时截，正式录制时跳过）；
 - `ctx.cwd`：录屏目录的 WSL 路径，`ctx.dryRun`：是否试跑。
 
-文件选择：先等文件选择框再点按钮，用录屏目录下的 WSL 路径：
+示例文件：
+
+- 问题出在导入之后（导入的文件只是前置条件）时，在 `prepare` 里先加载好再开录，录屏直接从加载好的页面开始：页面有「加载示例」一类按钮就点它，没有就用 `` await ctx.page.setInputFiles('#file', `${ctx.cwd}/samples/demo.raw`) ``。
+- 选文件、导入这一步本身就是问题现场时，在 `run` 里用 `ctx.upload`，录下弹出文件选择框选文件的过程：
 
 ```js
-const [fc] = await Promise.all([ctx.page.waitForEvent('filechooser'), ctx.click('text=导入文件')]);
-await fc.setFiles(`${ctx.cwd}/.qa/broken.wav`);
+await ctx.upload('text=导入文件', `${ctx.cwd}/.qa/broken.wav`);
 ```
+
+- 脚本里不要监听 `filechooser`（`waitForEvent('filechooser')`、`page.on('filechooser')`）：Playwright 会拦截，文件选择框就不弹出来了。
 
 ## 步骤
 
@@ -70,9 +81,10 @@ await fc.setFiles(`${ctx.cwd}/.qa/broken.wav`);
 
 - `run` 部分在时长上限减 5 秒内结束，按录屏步骤的顺序逐步执行，每步开头调用 `ctx.step`；每个现象出现后 `ctx.sleep(1500)` 到 `3000` 让画面停留，整体节奏不要太快也不要拖。
 - 只录 Feedback 里写到的内容，失败项照录；不在录屏里跑临时脚本、注入控制台脚本或改页面状态，证据放在页面上的正常操作里。录屏步骤本身要求使用控制台脚本定位精确像素时，用 `ctx.page.evaluate` 执行。
+- `run` 里不用 `page.reload`、`page.goto`、`locator.click`、`locator.fill`、`setInputFiles`、`page.keyboard` 做动作（画面上看不到对应的操作，一看就是脚本），分别换成 `ctx.reload`、`ctx.goto`、`ctx.click`、`ctx.type`、`ctx.upload`、`ctx.key`；`prepare` 不录，可以随意用。
 - 不调用 `page.pause`、不等待人工输入，不打开新的浏览器，不改动录屏目录里的已提交文件；脚本里不写死试跑生成的临时数据。
 - 以下情况无法自动录屏，`manual_needed` 设为 true，`reason` 写清原因，`script` 给空字符串：
-  - 现象依赖真显卡（如 WebGPU 渲染、软件渲染下帧率过低导致无法展示问题）且没有替代展示方式；
+  - 正式录制也在虚拟屏、现象又依赖真显卡（如 WebGPU 渲染、软件渲染下帧率过低导致无法展示问题）且没有替代展示方式；正式录制在本机桌面时有真显卡，不按这条判人工：操作步骤照常写，试跑时看不到的渲染结果，相关的检查用 `if (!ctx.dryRun)` 包起来只在正式录制时做，`reason` 里注明哪些现象试跑时无法核对；
   - 需要摄像头、麦克风、手柄等外设，或需要操作系统原生窗口（非浏览器、非终端）；
   - 反复试跑仍无法稳定复现录屏步骤中的现象。
 

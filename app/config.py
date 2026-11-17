@@ -106,8 +106,14 @@ DEFAULTS = {
     'do_continue_wait_sec': 60,
     # 自动录屏的时长上限（秒）
     'record_max_sec': 90,
-    # 自动录屏是否录制声音（需要 WSL 中安装 pulseaudio）
+    # 自动录屏是否录制声音（虚拟屏需要 WSL 中安装 pulseaudio，本机桌面需要 Windows 的 pyaudiowpatch）
     'record_audio': True,
+    # 自动录屏在 Windows 本机桌面上正式录制（本机 Chrome、Windows Terminal、真实文件对话框）；关闭时在 WSL 虚拟屏录制
+    'record_desktop': True,
+    # 本机桌面录制前要求的空闲时长（分钟，期间没有鼠标键盘操作且没锁屏）
+    'record_idle_min': 10,
+    # 本机桌面录制被人操作电脑打断后最多重录几次
+    'record_user_retries': 3,
 }
 
 _lock = threading.Lock()

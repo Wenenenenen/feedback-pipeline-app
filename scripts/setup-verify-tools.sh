@@ -7,10 +7,12 @@
 #   tmux：后台运行做题的 Claude Code 会话、可只读观看
 #   xvfb：录屏用的虚拟屏，pulseaudio：录屏用的虚拟声卡，fonts-noto-cjk：录屏画面里的中文
 #   xterm：录屏里的终端窗口，xdotool：驱动系统指针与键盘，x11-xserver-utils：设置虚拟屏底色与指针
+#   language-pack-zh-hans、language-pack-gnome-zh-hans：录屏里浏览器界面与系统文件选择框显示中文
 set -euo pipefail
 
 sudo apt-get update
-sudo apt-get install -y ffmpeg mesa-utils tmux xvfb pulseaudio fonts-noto-cjk xterm xdotool x11-xserver-utils
+sudo apt-get install -y ffmpeg mesa-utils tmux xvfb pulseaudio fonts-noto-cjk xterm xdotool x11-xserver-utils \
+  language-pack-zh-hans language-pack-gnome-zh-hans
 
 # nvm 安装的 node 只在交互式 shell 中可用
 # shellcheck disable=SC1091

@@ -1,9 +1,14 @@
 # -*- coding: utf-8 -*-
-"""自动录屏：在 WSL 的虚拟屏（Xvfb）与虚拟声卡（PulseAudio 空设备）上后台录制，不占用本机桌面。
+"""自动录屏。
 
-流程：全新克隆录屏目录 → 起虚拟屏与声卡 → 执行录屏前准备（不录）→ 取缓存或调用 qa-record 生成录屏脚本
-（生成时在同一块虚拟屏上试跑）→ 试跑过就重新克隆并重新准备 → 正式录制 → 执行录完收尾 → 校验 mp4 →
-移到录屏文件目录并标记完成。
+两种正式录制方式（配置 record_desktop）：
+- 本机桌面（默认）：在 Windows 主屏上用本机 Chrome、Windows Terminal、真实的文件对话框操作并录制，画面与真人录屏一致；
+  只在桌面空闲（没人用电脑、没锁屏）够久时开始，录制中有人碰鼠标键盘立即中止，等再次空闲后重录。
+- 虚拟屏：在 WSL 的虚拟屏（Xvfb）与虚拟声卡（PulseAudio 空设备）上后台录制，不占用本机桌面。
+qa-record 生成脚本时的试跑一律在虚拟屏上进行（尺寸与本机主屏一致），不打扰桌面。
+
+流程：全新克隆录屏目录 → 起虚拟屏与声卡 → 取缓存或执行录屏前准备并调用 qa-record 生成录屏脚本（试跑）→
+重新克隆并重新准备（本机桌面方式先等桌面空闲）→ 正式录制 → 执行录完收尾 → 校验 mp4 → 移到待上传目录并标记完成。
 """
 import contextlib
 import hashlib
@@ -14,14 +19,22 @@ import shutil
 import signal
 import socket
 import subprocess
+import threading
 import time
 from pathlib import Path
 
-from . import codex_runner, config, db, envcheck, jobs, pipeline as P, submission, wincursor
+from . import codex_runner, config, db, envcheck, jobs, pipeline as P, submission, wincursor, wintools
 
 HARNESS = Path(__file__).resolve().parent / 'record_harness' / 'harness.mjs'
-WIDTH, HEIGHT = 1280, 720
+# 执行器接口版本：ctx 的用法有变化时加一，缓存的旧录屏脚本随之作废、重新生成
+HARNESS_API = 3
 SINK = 'fbrec'
+# 执行器检测到真人操作电脑而中止时的退出码
+EXIT_USER_INPUT = 3
+# 本机桌面同一时间只能录一道题
+_desktop_lock = threading.Lock()
+# 上一次本机桌面录制：开录前那段空闲的起点 since 与录制结束时刻 end
+_desk_idle: dict = {}
 # 录屏前准备（安装依赖、启动服务）与收尾的超时（秒）
 SETUP_TIMEOUT = 1800
 CLEANUP_TIMEOUT = 300
@@ -84,6 +97,15 @@ class ManualNeeded(RecordError):
     """这道题无法自动录屏，需要人工录制。"""
 
 
+class UserInterrupted(RecordError):
+    """本机桌面录制中有人操作了电脑。"""
+
+
+def screen_size() -> dict:
+    """录屏画面尺寸：本机主屏的尺寸与工作区（虚拟屏也按这个尺寸，试跑与正式录制的页面布局一致）。"""
+    return wintools.screen()
+
+
 def display_num(task_id: int) -> int:
     return 100 + task_id % 50
 
@@ -101,8 +123,8 @@ def x_ready(n: int) -> bool:
 
 
 def script_key(t: dict) -> str:
-    """录屏脚本缓存的键：产物快照、录屏步骤、录屏前准备任一变化都要重新生成。"""
-    raw = json.dumps([t.get('artifact_sha'), t.get('record_steps'), t.get('record_prep')],
+    """录屏脚本缓存的键：产物快照、录屏步骤、录屏前准备、执行器接口版本任一变化都要重新生成。"""
+    raw = json.dumps([t.get('artifact_sha'), t.get('record_steps'), t.get('record_prep'), HARNESS_API],
                      ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(raw.encode('utf-8')).hexdigest()
 
@@ -138,7 +160,8 @@ def playwright_module(env: dict) -> str:
 class VirtualScreen:
     """一题一套虚拟屏与虚拟声卡，退出时连同录屏前准备启动的服务一起清理。"""
 
-    def __init__(self, task_id: int, work: Path, audio: bool, log):
+    def __init__(self, task_id: int, work: Path, audio: bool, log, size: dict | None = None):
+        self.size = size or {'width': 1920, 'height': 1080, 'work_w': 1920, 'work_h': 1032}
         self.n = display_num(task_id)
         self.work = work
         self.audio = audio
@@ -186,9 +209,10 @@ class VirtualScreen:
         self.work.mkdir(parents=True, exist_ok=True)
         # 同一编号的虚拟屏可能是上次中断留下的，先结束掉
         subprocess.run(['pkill', '-f', f'Xvfb {self.display} '], capture_output=True)
-        # /tmp/.X11-unix 在 WSLg 下只读，Xvfb 改用抽象套接字监听，客户端照常连接
-        x = self._spawn(['Xvfb', self.display, '-screen', '0', f'{WIDTH}x{HEIGHT}x24', '-dpi', '96',
-                         '-nolisten', 'tcp', '-ac'], 'xvfb.log')
+        # /tmp/.X11-unix 在 WSLg 下只读，Xvfb 改用抽象套接字监听，客户端照常连接；
+        # -noreset：最后一个客户端断开时不重置，否则 xsetroot 设的底色与根窗口指针会被清掉（弹窗上显示 X 形指针）
+        x = self._spawn(['Xvfb', self.display, '-screen', '0', f"{self.size['width']}x{self.size['height']}x24", '-dpi', '96',
+                         '-nolisten', 'tcp', '-ac', '-noreset'], 'xvfb.log')
         for _ in range(50):
             if x.poll() is not None:
                 raise RecordError('虚拟屏 Xvfb 启动失败：' + _tail(self.work / 'xvfb.log', 500))
@@ -197,7 +221,7 @@ class VirtualScreen:
             time.sleep(0.2)
         else:
             raise RecordError('虚拟屏 Xvfb 10 秒内没有就绪：' + _tail(self.work / 'xvfb.log', 500))
-        self.log(f'虚拟屏 {self.display} 已启动 {WIDTH}x{HEIGHT}')
+        self.log(f"虚拟屏 {self.display} 已启动 {self.size['width']}x{self.size['height']}")
         wincursor.ensure_theme(self.cursor_root)
         self.fonts_conf = windows_fonts(config.DATA_DIR / 'record-fonts')
         self.log('使用 Windows 字体' if self.fonts_conf else '没有找到 Windows 字体，使用系统字体')
@@ -300,26 +324,34 @@ def cleanup(t: dict, rdir: Path, env: dict, vs: VirtualScreen, log):
     vs.kill_services()
 
 
+def harness_size_args(size: dict) -> list[str]:
+    return ['--size', f"{size['width']}x{size['height']}", '--work-size', f"{size['work_w']}x{size['work_h']}"]
+
+
 def write_dryrun(vs: VirtualScreen, env: dict, rdir: Path, max_sec: int) -> Path:
     """写一个试跑脚本给 qa-record 用：带好虚拟屏环境，参数只需要录屏脚本路径。"""
     lines = ['#!/usr/bin/env bash', '# 自动录屏试跑：同一块虚拟屏，不录制。用法：bash dryrun.sh <录屏脚本.mjs>', 'set -u']
     for k, v in sorted(env.items()):
         lines.append(f'export {k}={shlex.quote(v)}')
+    size = ' '.join(shlex.quote(a) for a in harness_size_args(vs.size))
     lines.append(f'exec node {shlex.quote(str(HARNESS))} --dry-run --script "$1" --cwd {shlex.quote(str(rdir))} '
-                 f'--work {shlex.quote(str(vs.work / "dryrun"))} --max-sec {max_sec}')
+                 f'--work {shlex.quote(str(vs.work / "dryrun"))} --max-sec {max_sec} {size}')
     p = vs.work / 'dryrun.sh'
     p.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return p
 
 
-def script_input(t: dict, rdir: Path, dryrun: Path, setup_out: str, run_key: str) -> str:
+def script_input(t: dict, rdir: Path, dryrun: Path, setup_out: str, run_key: str, size: dict | None = None) -> str:
     """传给 qa-record 的输入。"""
     cfg = config.load()
+    size = size or {'width': 1920, 'height': 1080, 'work_w': 1920, 'work_h': 1032}
     ws_wsl = Path(cfg['agent_workspace_wsl']) / 'runs' / run_key
     ws_win = cfg['agent_workspace_win'].rstrip('\\') + f'\\runs\\{run_key}'
     p0, p1 = P.port_range(t)
     prep = t.get('record_prep') or {}
     ev = [e for e in t.get('evidence') or [] if e.get('recordable')]
+    final = ('Windows 本机桌面（本机 Chrome、Windows Terminal 里的 WSL、Windows 文件对话框）'
+             if cfg.get('record_desktop') else 'WSL 虚拟屏（与试跑相同）')
     parts = [
         *P.run_dir_lines(run_key),
         '## 题目',
@@ -341,7 +373,9 @@ def script_input(t: dict, rdir: Path, dryrun: Path, setup_out: str, run_key: str
         f'录屏目录 {rdir}（WSL 路径，终端命令都在这里执行）',
         f'录屏目录的 Windows 读取路径 {config.unc(rdir)}',
         f'可用端口 {p0}-{p1}',
-        f"浏览器窗口 {WIDTH}x{HEIGHT}（含标签栏与地址栏），产物服务在 WSL 内，浏览器也在 WSL 内，用 http://localhost:<端口> 访问",
+        f"屏幕 {size['width']}x{size['height']}，浏览器与终端窗口 {size['work_w']}x{size['work_h']}（去掉任务栏，浏览器含标签栏与地址栏），"
+        '产物服务在 WSL 内，用 http://localhost:<端口> 访问',
+        f'试跑在 WSL 虚拟屏上进行，正式录制在 {final}',
         f"时长上限 {cfg['record_max_sec']} 秒（脚本 run 部分要在 {int(cfg['record_max_sec']) - 5} 秒内结束）",
         '', '## 文件位置',
         f'录屏脚本写到 {ws_win}\\record.mjs（WSL 路径 {ws_wsl}/record.mjs）',
@@ -351,19 +385,10 @@ def script_input(t: dict, rdir: Path, dryrun: Path, setup_out: str, run_key: str
     return '\n'.join(parts)
 
 
-def run_harness(script: Path, rdir: Path, env: dict, vs: VirtualScreen, out: Path | None, max_sec: int,
-                log, stop) -> None:
-    cmd = ['node', str(HARNESS), '--script', str(script), '--cwd', str(rdir), '--work', str(vs.work / 'final'),
-           '--max-sec', str(max_sec)]
-    if out:
-        cmd += ['--out', str(out)]
-        if vs.audio:
-            cmd += ['--audio', f'{SINK}.monitor']
-    else:
-        cmd.append('--dry-run')
-    p = subprocess.Popen(cmd, cwd=str(rdir), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         stdin=subprocess.DEVNULL)
-    deadline = time.time() + max_sec + 120
+def _follow(p: subprocess.Popen, max_sec: int, log, stop) -> int:
+    """读执行器的事件流写进日志，返回退出码；出错时抛出执行器报告的原因。"""
+    # 录完还要把画面与声音合成并压缩成 mp4，多留一些时间
+    deadline = time.time() + max_sec + 300
     error = ''
     for raw in p.stdout:
         line = raw.decode('utf-8', 'replace').rstrip()
@@ -380,19 +405,104 @@ def run_harness(script: Path, rdir: Path, env: dict, vs: VirtualScreen, out: Pat
             p.kill()
             raise RecordError('人工停止' if stop.is_set() else '录屏执行超时')
     p.wait()
+    if p.returncode == EXIT_USER_INPUT:
+        raise UserInterrupted('录屏中检测到有人操作电脑，已中止')
     if p.returncode != 0:
         raise RecordError('录屏脚本执行失败：' + (error or f'退出码 {p.returncode}'))
+    return p.returncode
 
 
-def check_video(path: Path, max_sec: int) -> dict:
+def run_harness(script: Path, rdir: Path, env: dict, vs: VirtualScreen, out: Path | None, max_sec: int,
+                log, stop) -> None:
+    """在虚拟屏上执行录屏脚本：out 为空时只试跑。"""
+    cmd = ['node', str(HARNESS), '--script', str(script), '--cwd', str(rdir), '--work', str(vs.work / 'final'),
+           '--max-sec', str(max_sec), *harness_size_args(vs.size)]
+    if out:
+        cmd += ['--out', str(out)]
+        if vs.audio:
+            cmd += ['--audio', f'{SINK}.monitor']
+    else:
+        cmd.append('--dry-run')
+    p = subprocess.Popen(cmd, cwd=str(rdir), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL)
+    _follow(p, max_sec, log, stop)
+
+
+def desktop_work(run_key: str) -> tuple[str, Path]:
+    """本机桌面录制的工作目录：Windows 路径与对应的 WSL 路径。"""
+    root = wintools.detect()['root']
+    if not root:
+        raise RecordError('没有找到 Windows 的 %LOCALAPPDATA%')
+    win = f'{root}\\runs\\{run_key}'
+    wsl = Path(config.wsl_path(win))
+    wsl.mkdir(parents=True, exist_ok=True)
+    return win, wsl
+
+
+def run_desktop_harness(script_text: str, rdir: Path, run_key: str, attempt: int, audio: bool, max_sec: int,
+                        log, stop) -> Path:
+    """在本机桌面上正式录制，返回 mp4 的 WSL 路径。执行器在 Windows 的 node 里运行。"""
+    tools = wintools.detect()
+    win_work, wsl_work = desktop_work(f'{run_key}-{attempt}')
+    (wsl_work / 'record.mjs').write_text(script_text, encoding='utf-8')
+    out = wsl_work / 'record.mp4'
+    cmd = [wintools.exe(tools['node']), config.win_path(HARNESS), '--platform', 'win',
+           '--script', f'{win_work}\\record.mjs', '--cwd', str(rdir), '--work', win_work,
+           '--out', f'{win_work}\\record.mp4', '--max-sec', str(max_sec), '--audio', '1' if audio else '0',
+           '--pw', tools['pw'], '--python', tools['python'], '--ffmpeg', tools['ffmpeg'],
+           '--ffprobe', tools['ffprobe'], '--chrome', tools['chrome'], '--root', tools['root'],
+           '--distro', config.load()['wsl_distro']]
+    p = subprocess.Popen(cmd, cwd=wintools.WIN_CWD, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                         stdin=subprocess.DEVNULL)
+    _follow(p, max_sec, log, stop)
+    # 合成前的画面与声音文件很大，合成好就删掉（出错时保留现场）
+    for name in ('video.mkv', 'audio.wav'):
+        (wsl_work / name).unlink(missing_ok=True)
+    return out
+
+
+def desktop_idle_sec(st: dict) -> float:
+    """桌面实际空闲了多久：系统的「上次输入」也算上了录屏自己注入的输入，
+    最近一次输入不晚于上次录制结束时，说明之后没人碰过电脑，空闲从上次录制前的空闲起点算。"""
+    now = time.time()
+    if _desk_idle and now - st['idle_sec'] <= _desk_idle['end'] + 5:
+        return max(st['idle_sec'], now - _desk_idle['since'])
+    return st['idle_sec']
+
+
+def wait_desktop_idle(idle_min: float, log, stop) -> float:
+    """等到本机桌面没锁屏、且实际空闲超过 idle_min 分钟；返回这段空闲的起点（时间戳）。
+    屏保（恢复时不需要登录）在运行不影响，开录时执行器会先退出屏保。"""
+    need = idle_min * 60
+    last_note = 0.0
+    while True:
+        if stop.is_set():
+            raise RecordError('人工停止')
+        try:
+            st = wintools.idle()
+        except (RuntimeError, ValueError) as e:
+            raise RecordError(f'查询桌面状态失败：{e}') from e
+        idle = desktop_idle_sec(st)
+        if not st['locked'] and idle >= need:
+            log(f"桌面已空闲 {int(idle // 60)} 分钟" + ('（屏保运行中，开录时退出）' if st.get('screensaver') else '')
+                + '，开始录制')
+            return time.time() - idle
+        if time.time() - last_note > 600:
+            last_note = time.time()
+            log('等待桌面空闲：' + ('已锁屏，解锁后才能录（锁屏时画面录不到）' if st['locked']
+                                   else f"有人在用电脑（{int(idle)} 秒前有操作），需空闲 {idle_min:g} 分钟"))
+        stop.wait(min(30.0, max(5.0, need - idle)))
+
+
+def check_video(path: Path, max_sec: int, size: tuple[int, int]) -> dict:
     if not path.exists() or path.stat().st_size == 0:
         raise RecordError('没有生成录屏文件')
     info = submission._probe(path)
     problems = []
     if info['duration'] is None or info['duration'] > max_sec:
         problems.append(f"时长 {info['duration']} 秒超过 {max_sec} 秒")
-    if (info['width'], info['height']) != (WIDTH, HEIGHT):
-        problems.append(f"分辨率 {info['width']}x{info['height']} 不是 {WIDTH}x{HEIGHT}")
+    if (info['width'], info['height']) != tuple(size):
+        problems.append(f"分辨率 {info['width']}x{info['height']} 不是 {size[0]}x{size[1]}")
     if problems:
         raise RecordError('录屏文件不合格：' + '；'.join(problems))
     return info
@@ -401,7 +511,7 @@ def check_video(path: Path, max_sec: int) -> dict:
 def generate_script(t: dict, rdir: Path, env: dict, vs: VirtualScreen, setup_out: str, run_key: str, log, stop) -> dict:
     cfg = config.load()
     dryrun = write_dryrun(vs, env, rdir, int(cfg['record_max_sec']))
-    text = script_input(t, rdir, dryrun, setup_out, run_key)
+    text = script_input(t, rdir, dryrun, setup_out, run_key, vs.size)
     with jobs.ai_slot(log):
         r = codex_runner.run_skill('qa-record', text, run_key, log, stop)
     cache = {'key': script_key(t), 'script': r['script'], 'est_seconds': r['est_seconds'],
@@ -411,48 +521,95 @@ def generate_script(t: dict, rdir: Path, env: dict, vs: VirtualScreen, setup_out
     return cache
 
 
+def record_on_desktop(task_id: int, script_text: str, env: dict, vs: VirtualScreen, run_key: str, log, stop) -> Path:
+    """本机桌面正式录制：等桌面空闲 → 全新克隆并准备 → 录制；有人操作电脑就中止，等再次空闲后重来。"""
+    cfg = config.load()
+    idle_min = float(cfg.get('record_idle_min') or 0)
+    tries = max(1, int(cfg.get('record_user_retries') or 1))
+    with _desktop_lock:
+        for attempt in range(1, tries + 1):
+            since = wait_desktop_idle(idle_min, log, stop) or time.time()
+            t = db.get_task(task_id)
+            rdir = P.prepare_record_dir(t, log)
+            setup(t, rdir, env, vs, log, name=f'setup-desktop{attempt}')
+            human = False
+            try:
+                st = wintools.idle()
+                # 准备期间有人回来用电脑了：不开录，重新等
+                if st['locked'] or desktop_idle_sec(st) < idle_min * 60:
+                    raise UserInterrupted('准备录屏期间有人用了电脑')
+                log(f'开始在本机桌面正式录制（第 {attempt} 次）')
+                return run_desktop_harness(script_text, rdir, run_key, attempt, bool(cfg.get('record_audio')),
+                                           int(cfg['record_max_sec']), log, stop)
+            except UserInterrupted as e:
+                human = True
+                log(f'{e}，等桌面再次空闲后重录')
+            finally:
+                # 记下这次录制注入输入的时段：没人打断时，下一道题不用因为录屏自己的输入重新等空闲
+                if human:
+                    _desk_idle.clear()
+                else:
+                    _desk_idle.update(since=since, end=time.time())
+                cleanup(t, rdir, env, vs, log)
+    raise RecordError(f'连续 {tries} 次录制被人操作电脑打断，稍后重试')
+
+
 def run_record(task_id: int, run_key: str, log, stop):
     cfg = config.load()
     t = P.need(db.get_task(task_id), P.S_RECORD)
     if not t.get('record_steps'):
         raise RecordError('没有录屏步骤')
-    missing = envcheck.record_tools_missing(bool(cfg.get('record_audio')))
+    audio = bool(cfg.get('record_audio'))
+    desktop = bool(cfg.get('record_desktop'))
+    missing = envcheck.record_tools_missing(audio)
     if missing:
         raise RecordError('录屏工具缺失：' + '、'.join(missing) + '，执行 scripts/setup-verify-tools.sh 安装')
+    if desktop:
+        miss = [i['name'] for i in wintools.check(audio) if not i['ok']]
+        if miss:
+            raise RecordError('本机桌面录屏工具缺失：' + '、'.join(miss) + '，执行 scripts/setup-desktop-record.ps1 安装')
     max_sec = int(cfg['record_max_sec'])
     cache = t.get('record_script') or {}
     if cache.get('key') == script_key(t) and cache.get('manual_needed'):
         raise ManualNeeded(f"录屏脚本生成时判断需要人工录屏：{cache.get('reason')}")
+    size = screen_size()
     work = config.DATA_DIR / 'record-runs' / run_key
     work.mkdir(parents=True, exist_ok=True)
     rdir = P.prepare_record_dir(t, log)
     base = login_env()
-    with VirtualScreen(task_id, work, bool(cfg.get('record_audio')), log) as vs:
+    with VirtualScreen(task_id, work, audio, log, size) as vs:
         env = vs.env(base)
         env['FB_PLAYWRIGHT'] = playwright_module(env)
-        setup_out = setup(t, rdir, env, vs, log)
+        fresh = True
         if cache.get('key') == script_key(t) and cache.get('script'):
             log(f"复用 {cache.get('time')} 生成的录屏脚本")
         else:
+            setup_out = setup(t, rdir, env, vs, log)
             log('调用 qa-record 生成录屏脚本')
             cache = generate_script(t, rdir, env, vs, setup_out, run_key, log, stop)
+            cleanup(t, rdir, env, vs, log)
             if cache['manual_needed']:
-                cleanup(t, rdir, env, vs, log)
                 raise ManualNeeded(f"qa-record 判断需要人工录屏：{cache['reason']}")
-            # 试跑会改动录屏目录与服务状态：收尾后重新克隆、重新准备，从干净状态开录
-            log('试跑过录屏脚本，重新克隆录屏目录并重新执行录屏前准备')
-            cleanup(t, rdir, env, vs, log)
-            rdir = P.prepare_record_dir(db.get_task(task_id), log)
-            setup(t, rdir, env, vs, log, name='setup2')
-        script = work / 'record.mjs'
-        script.write_text(cache['script'], encoding='utf-8')
-        out = work / 'record.mp4'
-        log('开始正式录制')
-        try:
-            run_harness(script, rdir, env, vs, out, max_sec, log, stop)
-        finally:
-            cleanup(t, rdir, env, vs, log)
-    info = check_video(out, max_sec)
+            # 试跑会改动录屏目录与服务状态：重新克隆、重新准备，从干净状态开录
+            fresh = False
+        if desktop:
+            out = record_on_desktop(task_id, cache['script'], env, vs, run_key, log, stop)
+            rec_size = (size['width'], size['height'])
+        else:
+            if not fresh:
+                log('试跑过录屏脚本，重新克隆录屏目录')
+                rdir = P.prepare_record_dir(db.get_task(task_id), log)
+            setup(t, rdir, env, vs, log, name='setup2' if not fresh else 'setup')
+            script = work / 'record.mjs'
+            script.write_text(cache['script'], encoding='utf-8')
+            out = work / 'record.mp4'
+            log('开始在虚拟屏正式录制')
+            try:
+                run_harness(script, rdir, env, vs, out, max_sec, log, stop)
+            finally:
+                cleanup(t, rdir, env, vs, log)
+            rec_size = (size['width'], size['height'])
+    info = check_video(out, max_sec, rec_size)
     # 放到待上传目录，与轨迹同名（甲方序号-分支名）；重新录屏时覆盖旧文件
     dest = P.upload_dir() / f"{P.upload_stem(db.get_task(task_id))}.mp4"
     shutil.move(str(out), dest)
