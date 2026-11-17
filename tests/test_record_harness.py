@@ -48,3 +48,9 @@ def test_console_action_documented():
     assert 'ctx.console(' in s
     assert '不要用 `ctx.page.evaluate`' in s
     assert '多选不是人工录屏的理由' in s
+
+
+def test_number_input_click_avoids_spinner():
+    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    # 数字输入框的落点偏左，不落到右侧增减箭头上
+    assert "el.type === 'number'" in h and 'jx = -box.width * 0.15' in h

@@ -184,7 +184,11 @@ async function main() {
         const box = await loc.boundingBox();
         if (!box) throw new Error(`找不到元素：${t}`);
         const exact = opts.dx !== undefined || opts.dy !== undefined;
-        const jx = exact ? 0 : clamp(gauss() * box.width * 0.12, -box.width * 0.3, box.width * 0.3);
+        let jx = exact ? 0 : clamp(gauss() * box.width * 0.12, -box.width * 0.3, box.width * 0.3);
+        // 数字输入框右侧有增减箭头，落点偏到中心偏左，避免点到箭头把值加减 1
+        if (!exact && await loc.evaluate(el => el.tagName === 'INPUT' && el.type === 'number').catch(() => false)) {
+          jx = -box.width * 0.15 + clamp(gauss() * box.width * 0.06, -box.width * 0.12, box.width * 0.12);
+        }
         const jy = exact ? 0 : clamp(gauss() * box.height * 0.12, -box.height * 0.3, box.height * 0.3);
         p = await toScreen(box.x + box.width / 2 + (opts.dx || 0) + jx, box.y + box.height / 2 + (opts.dy || 0) + jy);
       }
