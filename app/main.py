@@ -271,9 +271,16 @@ def stop_run(run_key: str):
 # ---------- 提交表与录屏文件 ----------
 
 def _submission_tasks(body: dict | None) -> list[dict]:
-    """提交表的题目范围：勾选了题目时取勾选的，否则取全部已完成的；按甲方序号从小到大，没有甲方序号的排在最后。"""
-    ids = [int(x) for x in (body or {}).get('ids') or []]
-    tasks = [db.get_task(i) for i in ids] if ids else db.list_tasks(P.S_DONE)
+    """提交表的题目范围：勾选了题目时取勾选的，否则按 statuses 多选的状态取（不传时只取已完成，传空列表取全部状态）；
+    按甲方序号从小到大，没有甲方序号的排在最后。"""
+    body = body or {}
+    ids = [int(x) for x in body.get('ids') or []]
+    if ids:
+        tasks = [db.get_task(i) for i in ids]
+    else:
+        statuses = body.get('statuses')
+        statuses = [P.S_DONE] if statuses is None else set(statuses)
+        tasks = [t for t in db.list_tasks() if not statuses or t['status'] in statuses]
     return sorted((t for t in tasks if t), key=lambda t: (not t.get('client_seq'), client_seq_key(t), t['id']))
 
 

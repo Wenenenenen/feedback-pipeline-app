@@ -41,6 +41,71 @@ function copyText(text) {
   navigator.clipboard.writeText(text).then(() => toast('已复制'), () => toast('复制失败', true));
 }
 
+// 多选下拉：按钮显示已选摘要，点开是勾选面板；一项都不选等于全部。
+// 选择按 storeKey 记在本机，下次打开沿用；面板用固定定位，不会被滚动容器裁掉。
+function multiPicker(root, { options, allText, storeKey, initial = [], onChange }) {
+  let selected = new Set(initial);
+  try {
+    const saved = storeKey && JSON.parse(localStorage.getItem(storeKey) || 'null');
+    if (Array.isArray(saved)) selected = new Set(saved);
+  } catch (e) { /* 本地存储不可用时用初始值 */ }
+  root.classList.add('picker');
+  root.innerHTML = `<button type="button" class="picker-btn"><span class="picker-text"></span><i class="picker-caret">▾</i></button>
+    <div class="picker-pop hidden" role="listbox" aria-multiselectable="true"></div>`;
+  const btn = $('.picker-btn', root), pop = $('.picker-pop', root);
+
+  function summary() {
+    const labels = options.filter(o => selected.has(o.value)).map(o => o.label);
+    if (!labels.length) return allText;
+    return labels.length <= 2 ? labels.join('、') : `${labels[0]} 等 ${labels.length} 项`;
+  }
+  function renderPop() {
+    pop.innerHTML = options.map(o => `${o.group ? '<div class="picker-sep"></div>' : ''}
+      <label class="picker-item"><input type="checkbox" value="${esc(o.value)}" ${selected.has(o.value) ? 'checked' : ''}> ${esc(o.label)}</label>`).join('') +
+      `<div class="picker-foot"><button type="button" class="ghost" data-act="clear">${esc(allText)}</button></div>`;
+    pop.querySelectorAll('input').forEach(x => x.onchange = () => {
+      x.checked ? selected.add(x.value) : selected.delete(x.value);
+      changed();
+    });
+    $('[data-act="clear"]', pop).onclick = () => { selected.clear(); renderPop(); changed(); };
+  }
+  function refreshText() {
+    btn.querySelector('.picker-text').textContent = summary();
+    btn.classList.toggle('active', api_.values().length > 0);
+  }
+  function changed() {
+    refreshText();
+    try { if (storeKey) localStorage.setItem(storeKey, JSON.stringify([...selected])); } catch (e) { /* 忽略 */ }
+    onChange?.(api_.values());
+  }
+  function place() {
+    const r = btn.getBoundingClientRect();
+    pop.style.top = `${r.bottom + 4}px`;
+    pop.style.left = `${Math.min(r.left, window.innerWidth - pop.offsetWidth - 8)}px`;
+  }
+  function close() { pop.classList.add('hidden'); }
+  btn.onclick = () => {
+    if (!pop.classList.contains('hidden')) return close();
+    renderPop();
+    pop.classList.remove('hidden');
+    place();
+  };
+  document.addEventListener('click', e => { if (!root.contains(e.target)) close(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  window.addEventListener('resize', close);
+  document.addEventListener('scroll', e => { if (!pop.contains(e.target)) close(); }, true);
+
+  const api_ = {
+    // 只返回当前选项里有的值（选项变化后旧值自动失效），按选项顺序排列
+    values: () => options.filter(o => selected.has(o.value)).map(o => o.value),
+    set(vals) { selected = new Set(vals); changed(); },
+    // 换选项只刷新按钮文字，不触发 onChange
+    setOptions(opts) { options = opts; refreshText(); },
+  };
+  refreshText();
+  return api_;
+}
+
 // 流水线主干阶段（不含「失败」），用于详情顶部的进度轨
 const STAGES = ['待初始化', '待准备环境', '待做题', '待收集', '待验收', '待查验', '待录屏', '已完成'];
 // 需要人工动手的阶段，用醒目颜色提示
@@ -148,13 +213,21 @@ function showTab(name) {
 document.querySelectorAll('.tab').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
 // ---------- 列表 ----------
+// 状态筛选选项：各状态之后是自动做题的两项（以 __ 开头，按题目标记过滤）
+function statusOptions(withAuto) {
+  const opts = META.statuses.map(s => ({ value: s, label: s }));
+  return withAuto ? opts.concat({ value: '__auto', label: '自动做题中', group: true },
+    { value: '__paused', label: '自动需处理' }) : opts;
+}
+const statusFilter = multiPicker($('#status-filter'), {
+  options: [], allText: '全部状态', storeKey: 'list-status-filter', onChange: () => run(loadList),
+});
+
 async function loadList() {
-  const st = $('#status-filter').value;
-  // 以 __ 开头的是自动做题的筛选，取全部后在页面上过滤
-  const special = st.startsWith('__');
-  let rows = await api('/api/tasks' + (st && !special ? '?status=' + encodeURIComponent(st) : ''));
-  if (st === '__auto') rows = rows.filter(t => t.auto_run);
-  if (st === '__paused') rows = rows.filter(t => t.auto_paused);
+  // 多选按「或」组合：题目满足任一勾选项即显示；不勾选时显示全部
+  const sel = new Set(statusFilter.values());
+  let rows = await api('/api/tasks');
+  if (sel.size) rows = rows.filter(t => sel.has(t.status) || (sel.has('__auto') && t.auto_run) || (sel.has('__paused') && t.auto_paused));
   const checked = new Set([...document.querySelectorAll('.row-check:checked')].map(x => +x.value));
   $('#task-count').textContent = `${rows.length} 题`;
   $('#task-table tbody').innerHTML = rows.map(t => `
@@ -176,7 +249,6 @@ async function loadList() {
   });
 }
 $('#refresh').onclick = () => run(loadList);
-$('#status-filter').onchange = () => run(loadList);
 $('#check-all').onchange = e => document.querySelectorAll('.row-check').forEach(x => x.checked = e.target.checked);
 
 // ---------- 列表折叠 ----------
@@ -249,8 +321,12 @@ async function downloadSubmission(ids) {
   toast('已导出 ' + a.download);
 }
 
-// 提交表范围：all 为全部已完成的题，checked 为题目列表里勾选的题
+// 提交表范围：all 为按状态筛选（默认只看已完成），checked 为题目列表里勾选的题
 let subScope = 'all';
+const subStatus = multiPicker($('#sub-status'), {
+  options: [], allText: '全部状态', storeKey: 'sub-status-filter', initial: ['已完成'],
+  onChange: () => { subScope = 'all'; run(loadSubmission); },
+});
 
 function checkedIds() {
   return [...document.querySelectorAll('.row-check:checked')].map(x => +x.value);
@@ -258,15 +334,19 @@ function checkedIds() {
 
 async function loadSubmission() {
   const checked = checkedIds();
-  // 选了「勾选的题目」但列表里没有勾选时退回全部已完成
+  // 选了「勾选的题目」但列表里没有勾选时退回按状态筛选
   const useChecked = subScope === 'checked' && checked.length > 0;
-  const ids = useChecked ? checked : [];
-  const data = await api('/api/submission', { method: 'POST', body: { ids } });
+  const statuses = subStatus.values();
+  const data = await api('/api/submission', { method: 'POST', body: useChecked ? { ids: checked } : { statuses } });
   $('#sub-scope-all').classList.toggle('active', !useChecked);
   $('#sub-scope-checked').classList.toggle('active', useChecked);
   $('#sub-scope-checked').disabled = !checked.length;
   $('#sub-scope-checked').textContent = `列表勾选的${checked.length ? ` ${checked.length} 题` : ''}`;
-  $('#sub-scope').textContent = useChecked ? `勾选的 ${data.rows.length} 题` : `全部已完成的 ${data.rows.length} 题`;
+  $('#sub-status').classList.toggle('dim', useChecked);
+  const stText = statuses.length ? statuses.join('、') : '全部状态';
+  $('#sub-scope').textContent = useChecked ? `勾选的 ${data.rows.length} 题` : `${stText} ${data.rows.length} 题`;
+  // 导出与写入飞书都按当前页里的题目
+  const ids = data.rows.map(r => r.id);
   // 每行可折叠：只有一题时默认展开，多题时默认折叠
   const openRow = data.rows.length <= 1;
   $('#sub-body').innerHTML = data.rows.map((r, ri) => {
@@ -351,7 +431,7 @@ async function loadSubmission() {
     if (!confirm(`把当前页的 ${rowIds.length} 题写入飞书？按 UID（甲方序号）有则更新 无则新增`)) return;
     await syncFeishu(rowIds, `写入飞书 ${rowIds.length} 题`);
   });
-  loadFeishuMarks(data, rowIds);
+  loadFeishuMarks(data, rowIds, ++subRender);
 }
 
 // 后台写入飞书并打开运行日志，运行结束后刷新提交表页的飞书标记
@@ -370,16 +450,20 @@ async function syncFeishu(ids, title) {
 }
 
 // 各行的飞书标记：飞书表里有这个 UID 时显示已写入（多条时提示重复），每行都可单独写入
-async function loadFeishuMarks(data, ids) {
+// 提交表页的渲染代号：飞书状态返回时页面已按新范围重绘的，丢弃这次结果
+let subRender = 0;
+
+async function loadFeishuMarks(data, ids, render) {
   const B = $('#sub-body');
   let st;
   try {
     st = await api('/api/feishu/status', { method: 'POST', body: { ids } });
   } catch (e) {
+    if (render !== subRender) return;
     B.querySelectorAll('[data-feishu-slot]').forEach(s => { s.innerHTML = `<span class="chip fail" title="${esc(e.message)}">飞书读取失败</span>`; });
     return;
   }
-  if (!st.configured) return;
+  if (render !== subRender || !st.configured) return;
   B.querySelectorAll('[data-feishu-slot]').forEach(slot => {
     const r = data.rows[+slot.dataset.feishuSlot];
     const recs = st.records[r.id] || [];
@@ -1066,8 +1150,7 @@ function renderAutoBar() {
   $('#auto-bar').querySelectorAll('[data-goto]').forEach(a => a.onclick = e => { e.preventDefault(); run(() => showTask(+a.dataset.goto)); });
   $('#auto-bar').querySelectorAll('[data-paused]').forEach(a => a.onclick = e => {
     e.preventDefault();
-    $('#status-filter').value = '__paused';
-    run(loadList);
+    statusFilter.set(['__paused']);
   });
 }
 
@@ -1103,8 +1186,8 @@ function renderPoolCard() {
 // ---------- 启动 ----------
 (async () => {
   META = await api('/api/meta');
-  $('#status-filter').innerHTML += META.statuses.map(s => `<option>${esc(s)}</option>`).join('') +
-    '<option value="__auto">自动做题中</option><option value="__paused">自动需处理</option>';
+  statusFilter.setOptions(statusOptions(true));
+  subStatus.setOptions(statusOptions(false));
   fillDomains();
   await run(loadList);
   await run(loadAuto);

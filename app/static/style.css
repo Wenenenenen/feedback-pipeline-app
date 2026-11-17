@@ -441,3 +441,24 @@ details.sub-row[open] > .sub-row-head { border-bottom: 1px dashed var(--line); b
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 details.sub-row[open] > .sub-row-head .sub-prompt { display: none; }
+
+/* ---------- 多选下拉 ---------- */
+.picker { position: relative; display: inline-block; }
+.picker.dim { opacity: .5; }
+.picker-btn {
+  display: inline-flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-width: 128px; max-width: 240px; padding: 6px 10px; background: #fff; border: 1px solid var(--line-strong); border-radius: 7px;
+}
+.picker-btn.active { border-color: var(--primary); color: var(--primary-ink); }
+.picker-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker-caret { font-style: normal; font-size: 11px; color: var(--muted); }
+/* 面板用固定定位，避免被列表的滚动容器裁掉 */
+.picker-pop {
+  position: fixed; z-index: 60; min-width: 180px; max-height: 60vh; overflow: auto; padding: 6px;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: 8px; box-shadow: var(--shadow);
+}
+.picker-item { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.picker-item:hover { background: var(--sunken); }
+.picker-sep { height: 1px; margin: 4px 2px; background: var(--line); }
+.picker-foot { display: flex; justify-content: flex-end; margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--line); }
+.picker-foot button { padding: 2px 8px; font-size: 12px; }

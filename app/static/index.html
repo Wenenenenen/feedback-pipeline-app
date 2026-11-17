@@ -28,7 +28,7 @@
     <div class="list-pane">
       <div class="toolbar">
         <button id="list-toggle" class="ghost list-toggle" title="向左折叠题目列表">«</button>
-        <select id="status-filter"><option value="">全部状态</option></select>
+        <span id="status-filter" title="可多选 题目满足任一勾选项即显示 不选为全部"></span>
         <button id="refresh" class="ghost">刷新</button>
         <span class="spacer"></span>
         <span class="auto-bar" id="auto-bar"></span>
@@ -49,9 +49,10 @@
       <div class="sub-head">
         <h3>提交表</h3><span class="muted" id="sub-scope"></span>
         <span class="seg">
-          <button type="button" id="sub-scope-all" class="ghost">全部已完成</button>
+          <button type="button" id="sub-scope-all" class="ghost" title="按右侧选的状态列出题目">按状态</button>
           <button type="button" id="sub-scope-checked" class="ghost" title="题目页列表里勾选的题目">列表勾选的</button>
         </span>
+        <span id="sub-status" title="可多选 不选为全部状态 默认只看已完成"></span>
         <span class="spacer"></span>
         <span class="muted hint">点单元格复制该格 复制整行可直接粘贴到表格</span>
         <button type="button" id="sub-refresh" class="ghost">刷新</button>

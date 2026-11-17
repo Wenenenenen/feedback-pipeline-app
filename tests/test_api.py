@@ -198,6 +198,13 @@ def test_submission_rows(client):
     big = new_task(branch='big-seq', status=pipeline.S_DONE, client_seq='9')
     body = client.post('/api/submission', json={'ids': [other, done, big]}).json()
     assert [r['branch'] for r in body['rows']] == ['big-seq', 'done-task', 'check-task']
+    # 按状态多选：取任一勾选状态的题；传空列表取全部状态
+    body = client.post('/api/submission', json={'statuses': [pipeline.S_CHECK, pipeline.S_REWORK]}).json()
+    assert [r['branch'] for r in body['rows']] == ['check-task']
+    body = client.post('/api/submission', json={'statuses': [pipeline.S_DONE, pipeline.S_CHECK]}).json()
+    assert [r['branch'] for r in body['rows']] == ['big-seq', 'done-task', 'check-task']
+    body = client.post('/api/submission', json={'statuses': []}).json()
+    assert len(body['rows']) == 3
 
 
 def test_submission_xlsx(client):
