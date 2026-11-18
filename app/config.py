@@ -64,6 +64,8 @@ DEFAULTS = {
     'agent_workspace_wsl': str(AGENT_DIR),
     'model': 'gpt-6.1-sol',
     'reasoning_effort': 'xhigh',
+    # 生成录屏脚本（qa-record）单独的推理强度：脚本有试跑与自动查验兜底，用较低强度省额度；留空时沿用上面的推理强度
+    'record_reasoning_effort': 'high',
     # 沿用 Windows codex 的 config.toml 中的供应商与模型（CC Switch 或第三方 API 时打开）；
     # 只读取 model、model_provider 和对应的 [model_providers.<名称>]，MCP、插件等仍不加载
     'codex_follow_toml': False,

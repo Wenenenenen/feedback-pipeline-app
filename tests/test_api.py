@@ -949,3 +949,15 @@ def test_gen_input_lists_deleted_topics(data_dir):
     assert 'kept-topic |' in text and '保留的题目原文' in text
     assert 'gone-topic（已删除） |' in text and '删掉的题目原文' in text
     assert keep
+
+
+def test_record_reasoning_effort():
+    """生成录屏脚本单独用 record_reasoning_effort，留空时沿用通用推理强度；其他环节不受影响。"""
+    cfg = {**config.DEFAULTS, 'reasoning_effort': 'xhigh', 'record_reasoning_effort': 'high'}
+    effort = lambda skill: next(c for c in codex_runner.build_cmd(cfg, skill, 'r') if c.startswith('model_reasoning_effort'))
+    assert effort('qa-record') == 'model_reasoning_effort="high"'
+    for skill in ('qa-review', 'qa-gen', 'qa-rework'):
+        assert effort(skill) == 'model_reasoning_effort="xhigh"'
+    cfg['record_reasoning_effort'] = ' '
+    assert effort('qa-record') == 'model_reasoning_effort="xhigh"'
+    assert config.DEFAULTS['record_reasoning_effort'] == 'high'

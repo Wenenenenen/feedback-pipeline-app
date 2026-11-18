@@ -120,12 +120,19 @@ def mask_args(cmd: list[str]) -> list[str]:
     return out
 
 
+def reasoning_effort(cfg: dict, skill: str) -> str:
+    """本次运行的推理强度：生成录屏脚本可单独设置（留空沿用通用推理强度），其他环节用通用推理强度。"""
+    if skill == 'qa-record' and (cfg.get('record_reasoning_effort') or '').strip():
+        return cfg['record_reasoning_effort'].strip()
+    return cfg['reasoning_effort']
+
+
 def build_cmd(cfg: dict, skill: str, run_key: str) -> list[str]:
     ws = cfg['agent_workspace_win'].rstrip('\\')
     return [
         cfg['codex_path'], 'exec', '--json', '--ephemeral', '--ignore-user-config',
         '--skip-git-repo-check',
-        *model_args(cfg), '-c', f'model_reasoning_effort="{cfg["reasoning_effort"]}"',
+        *model_args(cfg), '-c', f'model_reasoning_effort="{reasoning_effort(cfg, skill)}"',
         '-s', 'danger-full-access', '-C', ws,
         '--output-schema', f'{ws}\\schemas\\{skill}.json',
         '-o', f'{ws}\\runs\\{run_key}\\result.json',

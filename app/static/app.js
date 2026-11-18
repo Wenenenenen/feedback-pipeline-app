@@ -1039,6 +1039,7 @@ const CONFIG_FIELDS = [
   ['agent_workspace_wsl', 'Codex 工作区（WSL 路径）'],
   ['model', '模型名'],
   ['reasoning_effort', '推理强度'],
+  ['record_reasoning_effort', '生成录屏脚本的推理强度（留空沿用上面的推理强度）'],
   ['codex_follow_toml', '沿用 config.toml 的供应商与模型（用 CC Switch 或第三方 API 时勾选；勾选后模型取 config.toml 的 model，没有时才用上面的模型名）', 'checkbox'],
   ['codex_config_toml', 'config.toml 路径（WSL 路径，留空自动定位 Windows 的 .codex\\config.toml）'],
   ['wsl_distro', 'WSL 发行版名'],
