@@ -71,6 +71,14 @@ def get_config():
 
 @app.put('/api/config')
 def put_config(body: dict = Body(...)):
+    if 'do_parallel_max' in body:
+        try:
+            n = int(body['do_parallel_max'])
+        except (TypeError, ValueError):
+            raise HTTPException(400, '自动做题并行数要填整数')
+        if not 1 <= n <= config.DO_PARALLEL_HARD_MAX:
+            raise HTTPException(400, f'自动做题并行数只能在 1 到 {config.DO_PARALLEL_HARD_MAX} 之间'
+                                     '（甲方规定 Claude Code 同时不能超过 15 个）')
     return config.save(body)
 
 

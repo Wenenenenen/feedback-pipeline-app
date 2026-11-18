@@ -267,7 +267,7 @@ def auto_busy() -> list[int]:
 
 
 def do_cap() -> int:
-    return max(1, int(config.load()['do_parallel_max']))
+    return max(1, min(int(config.load()['do_parallel_max']), config.DO_PARALLEL_HARD_MAX))
 
 
 def doing(tasks: list[dict], busy: set[int]) -> list[dict]:

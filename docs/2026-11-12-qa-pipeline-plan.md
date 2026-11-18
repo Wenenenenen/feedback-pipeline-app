@@ -181,3 +181,5 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 > 状态（2026-11-18，下午）：① 出题查重改为出过的全部题目：`db.list_generated_topics` 取含已删除的全部题，`_gen_input` 的「库内已有题目」里已删除的标注「（已删除）」，删掉的题也不会再出一遍；新增 `test_gen_input_lists_deleted_topics`，158 个测试通过。② 12710–12719、13090–13099 原题重做：删 GitHub 分支 20 个、本地做题/验收/录屏目录 58 个、待上传文件 38 个、飞书记录 19 条（UID=1 测试行保留）；WSL `~/.claude/projects` 下这 20 个做题目录的旧会话与项目记忆移到 `~/jianzhi/feedback-pipeline/data/old-sessions/20261118-180554/`；题目字段按出题结果 `result.json` 还原，状态改回待初始化，做题之后的字段清空，运行记录保留。
 
 > 状态（2026-11-18，晚）：① 新增配置 `record_reasoning_effort`（默认 high）：生成录屏脚本（qa-record）单独用这个推理强度，留空沿用 `reasoning_effort`；验收、出题、返修仍用 `reasoning_effort`（xhigh）。`codex_runner.reasoning_effort` 按环节取值，配置页新增一项，新增 `test_record_reasoning_effort`，159 个测试通过。② 甲方序号 13580–13589 的 10 道题按 qa-gen 规则人工出题（Codex 额度留给夜跑），出题记录 `agent/runs/20261118-190758-qa-gen-manual/`，素材脚本均在 WSL 实际执行并用独立实现核对参考值，按出题流程入库为待初始化。
+
+> 状态（2026-11-18，晚，续）：甲方规定 Claude Code 同时不能超过 15 个。新增 `config.DO_PARALLEL_HARD_MAX = 15`：配置接口拒绝保存超过 15 或小于 1 的 `do_parallel_max`，`autopilot.do_cap` 再按 15 封顶（配置文件被手改也不会超）；自动做题只有调度器一个入口启动会话，人工重试回到待做题的题同样受上限约束。并行数设为 14。新增 `test_parallel_hard_max`，160 个测试通过。

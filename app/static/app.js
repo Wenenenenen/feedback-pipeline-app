@@ -1055,7 +1055,7 @@ const CONFIG_FIELDS = [
   ['upload_dir', '待上传文件目录（WSL 路径，轨迹与自动录屏放在这里，文件名为甲方序号-分支名）'],
   ['gpu_auto_confirm', '自动确认显卡能力（准备环境时依赖显卡的题直接记为通过 不再停下等人工确认 环境检查明细里注明）', 'checkbox'],
   ['pool_gen_count', '补充题目池每轮出题数（1 到 10）', 'number'],
-  ['do_parallel_max', '自动做题并行数（同时做题的 Claude Code 会话上限）', 'number'],
+  ['do_parallel_max', '自动做题并行数（同时做题的 Claude Code 会话上限，甲方规定最多 15）', 'number'],
   ['auto_backlog_max', '自动做题后段积压上限（收集 验收 查验 录屏阶段没停下的自动题达到该数量就暂不取新题）', 'number'],
   ['do_ready_timeout_sec', '等待 Claude Code 就绪（秒）', 'number'],
   ['do_timeout_min', '单题做题超时（分钟）', 'number'],

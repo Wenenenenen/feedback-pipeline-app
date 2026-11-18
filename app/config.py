@@ -53,6 +53,9 @@ BUILTIN_SKILLS = [
     'artifact-design', 'artifact-diagramming',
 ]
 
+# 甲方规定同时运行的 Claude Code 会话不能超过 15 个：自动做题并行数的硬上限，配置页填多大都按这个封顶
+DO_PARALLEL_HARD_MAX = 15
+
 DEFAULTS = {
     # GitHub 仓库（推送使用 WSL 中已配置的 ssh 凭据）
     'github_repo': 'git@github.com:Wenenenenen/feedback-common.git',

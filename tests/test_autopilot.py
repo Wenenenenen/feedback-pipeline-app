@@ -855,3 +855,16 @@ def test_windows_cursor_theme(tmp_path):
     assert len(data) == pos + 36 + w * h * 4
     px = wincursor.render(wincursor.ARROW)
     assert px[0] == wincursor.BLACK and px[2 * wincursor.SIZE + 1] == wincursor.WHITE
+
+
+def test_parallel_hard_max(client):
+    """甲方规定 Claude Code 同时不能超过 15 个：配置页超过 15 拒绝保存，配置文件里写了更大的值也按 15 封顶。"""
+    from app import config
+    assert config.DO_PARALLEL_HARD_MAX == 15
+    assert client.put('/api/config', json={'do_parallel_max': 16}).status_code == 400
+    assert client.put('/api/config', json={'do_parallel_max': 0}).status_code == 400
+    assert client.put('/api/config', json={'do_parallel_max': 'x'}).status_code == 400
+    assert client.put('/api/config', json={'do_parallel_max': 14}).json()['do_parallel_max'] == 14
+    assert autopilot.do_cap() == 14
+    config.save({'do_parallel_max': 30})
+    assert autopilot.do_cap() == 15
