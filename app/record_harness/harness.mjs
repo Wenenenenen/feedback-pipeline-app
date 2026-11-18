@@ -149,8 +149,6 @@ async function main() {
       }
     },
     type: (text, base = 70) => b.typeText(text, typingDelays(text, base)),
-    // 粘贴整段文字：与人一样复制好再按 Ctrl+V，文字一次出现
-    paste: text => b.pasteText(String(text)),
   };
 
   // 页面坐标（CSS 像素）转屏幕坐标
@@ -213,18 +211,11 @@ async function main() {
       await human.click(opts.button || 'left', opts.clickCount || 1);
       await sleep(rand(100, 220));
     },
-    // 点中输入框后粘贴文字（与人一样复制好再 Ctrl+V，长文本不会逐字打很久）；
-    // Feedback 的问题本身与逐字键入有关时传 {typing: true}，改为逐字输入，字与字之间的间隔有快有慢
+    // 点中输入框后逐字输入，字与字之间的间隔有快有慢
     async type(t, text, opts = {}) {
       await ctx.click(t);
       await sleep(rand(150, 350));
-      if (opts.typing) {
-        await b.typeInPage(String(text), typingDelays(text, opts.delay ?? 85));
-      } else {
-        emit('paste', { chars: String(text).length });
-        await b.pasteInPage(String(text));
-        await sleep(rand(250, 500));
-      }
+      await b.typeInPage(String(text), typingDelays(text, opts.delay ?? 85));
     },
     // 系统按键（xdotool 写法，如 ctrl+a、Return、F5），发给当前窗口
     async key(combo, opts = {}) {
@@ -274,7 +265,7 @@ async function main() {
         await human.click();
         await sleep(rand(200, 400));
         await b.key('ctrl+a');
-        await human.paste(url);
+        await human.type(url, 55);
         await sleep(rand(250, 500));
         await b.key('Return');
       }, opts);
@@ -420,9 +411,7 @@ async function main() {
         const lines = () => fs.readFileSync(b.termStatus, 'utf8').split('\n').filter(Boolean);
         const before = lines().length;
         await sleep(rand(200, 500));
-        // 单行命令粘贴进终端；多行命令粘贴时 Windows Terminal 会弹多行粘贴确认框，仍逐行打出
-        if (!opts.typing && !cmd.includes('\n')) await human.paste(cmd);
-        else await human.type(cmd, clamp(Math.round(2800 / Math.max(1, cmd.length)), 25, 80));
+        await human.type(cmd, clamp(Math.round(2800 / Math.max(1, cmd.length)), 25, 80));
         await sleep(rand(250, 500));
         await b.key('Return');
         emit('term', { cmd });

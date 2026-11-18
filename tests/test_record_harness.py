@@ -1,5 +1,6 @@
 """录屏执行器（record_harness）的静态检查：语法正确，新增的多选上传与控制台操作在执行器和 qa-record 说明里一致。"""
 import glob
+import json
 import os
 import shutil
 import subprocess
@@ -77,18 +78,17 @@ def test_desktop_capture_marks_wallclock_and_mux_pads():
     assert 'tpad=stop_mode=clone:stop_duration=' in h and 'stopWall = Date.now() / 1000' in h
 
 
-def test_text_input_pastes():
-    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
-    # 网页输入框、地址栏、单行终端命令默认粘贴，{typing: true} 时才逐字输入
-    assert 'b.pasteInPage(String(text))' in h and 'opts.typing' in h
-    assert 'await human.paste(url)' in h
-    assert "!cmd.includes('\\n')) await human.paste(cmd)" in h
-    # 两个后端都提供粘贴；本机桌面经剪贴板加 Ctrl+V，文件名框也用粘贴
-    win = (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
-    assert "helper.req('paste'" in win and 'human.paste(name)' in win
-    x11 = (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
-    assert 'b.pasteInPage = ' in x11 and 'b.pasteText = ' in x11
-    helper = (HARNESS / 'wininput.py').read_text(encoding='utf-8')
-    assert "op == 'paste'" in helper and 'SetClipboardData(CF_UNICODETEXT' in helper
-    s = SKILL.read_text(encoding='utf-8')
-    assert '粘贴文字' in s and '`{typing: true}`' in s
+def test_typing_slowed_down():
+    node = _node()
+    if not node:
+        pytest.skip('没有 node')
+    url = (HARNESS / 'human.mjs').as_uri()
+    # 不含空格的 2000 个字：放慢前平均停顿约为基准的 0.98 倍（快慢字混合加偶尔的停顿），放慢后约 147 毫秒
+    js = (f"import {{ typingDelays, TYPING_SLOWDOWN }} from '{url}';"
+          "const d = typingDelays('a'.repeat(2000), 100);"
+          "console.log(JSON.stringify([TYPING_SLOWDOWN, d.reduce((s, x) => s + x, 0) / d.length]));")
+    r = subprocess.run([node, '--input-type=module', '-e', js], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    slow, mean = json.loads(r.stdout)
+    assert slow == 1.5
+    assert 130 < mean < 165, mean

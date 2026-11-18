@@ -63,8 +63,12 @@ export function humanPath(from, to, { ms, W, H } = {}) {
   return pts.map(([px, py, w]) => [px, py, Math.round(w)]);
 }
 
+// 逐字输入整体放慢的倍数：各处调用给的基准停顿都乘上它，打字节奏更接近真人
+export const TYPING_SLOWDOWN = 1.5;
+
 // 逐字输入时每个字之后的停顿（毫秒）：有快有慢，几个字一组，空格后偶尔停一下
 export function typingDelays(text, base = 85) {
+  base *= TYPING_SLOWDOWN;
   const chars = [...String(text)];
   const out = [];
   let group = 0;
