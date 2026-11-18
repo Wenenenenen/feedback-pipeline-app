@@ -940,7 +940,7 @@ def test_upload_names_follow_client_seq(client, tmp_path):
     assert t['trajectory_path'] == str(d / 'demo.jsonl') and t['recording_link'] == str(old_rec)
 
 
-def test_gen_input_lists_deleted_topics():
+def test_gen_input_lists_deleted_topics(data_dir):
     """出题查重的已有题目包括已删除的题，删掉的题标注已删除。"""
     keep = new_task(branch='kept-topic', user_prompt='保留的题目原文')
     gone = new_task(branch='gone-topic', user_prompt='删掉的题目原文')
