@@ -92,3 +92,20 @@ def test_typing_slowed_down():
     slow, mean = json.loads(r.stdout)
     assert slow == 1.5
     assert 130 < mean < 165, mean
+
+
+def test_long_text_pastes():
+    node = _node()
+    if not node:
+        pytest.skip('没有 node')
+    url = (HARNESS / 'human.mjs').as_uri()
+    js = (f"import {{ isLongText, PASTE_OVER }} from '{url}';"
+          "console.log(JSON.stringify([PASTE_OVER, isLongText('字'.repeat(200)), isLongText('字'.repeat(201))]));")
+    r = subprocess.run([node, '--input-type=module', '-e', js], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    # 超过 200 字才粘贴，按字数（不是字节数）算
+    assert json.loads(r.stdout) == [200, False, True]
+    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    assert 'b.pasteInPage(String(text))' in h and 'b.pasteText(String(text))' in h
+    assert "helper.req('paste'" in (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
+    assert 'SetClipboardData(CF_UNICODETEXT' in (HARNESS / 'wininput.py').read_text(encoding='utf-8')

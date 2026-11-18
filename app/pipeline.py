@@ -540,15 +540,27 @@ _RECORD_ONLY_RULES = [
     (r'dispatchEvent|createObjectURL',
      '用控制台脚本复现 除非必须定位精确像素 改成产物页面上的正常操作'),
 ]
-# 控制台脚本：步骤写明在控制台只读取数值（如精确像素）时放行，带赋值、点击、改动页面或存储的仍算注入
-_CONSOLE_RULE = (r'document\.|window\.', '用控制台脚本复现 除非必须定位精确像素 改成产物页面上的正常操作')
-_CONSOLE_WRITE = re.compile(r'(?<![=!<>])=(?![=>])|\.click\(|\.(?:append|remove|insert|set|replace)\w*\(|'
-                            r'innerHTML|textContent\s*=|localStorage|sessionStorage|fetch\(|eval\(')
+# 控制台脚本：只有只读地读取精确像素的脚本放行，其余（注入数据、改页面状态、调用页面函数、读其他数值）一律拦下
+_CONSOLE_RULE = '控制台脚本只用于只读地读取精确像素 其他改成产物页面上的正常操作'
+# 认出控制台脚本：页面对象、箭头函数、变量声明、await、fetch 等 JavaScript 写法（终端命令里不会出现）
+_CONSOLE_JS = re.compile(r'document\.|window\.|\bObject\.|=>|\b(?:const|let|var)\s+\w+\s*=|\bawait\b|\bfetch\(|'
+                         r'console\.\w+\(|querySelector|getElementById|getContext\(')
+# 读取精确像素：getImageData、readPixels，或步骤写明读取像素（像素比不算）
+_CONSOLE_PIXEL = re.compile(r'getImageData|readPixels|像素(?!比)')
+# 写操作：赋值、自增减、点击、增删改节点或属性、构造事件或文件、存储、网络请求、动态执行
+_CONSOLE_WRITE = re.compile(r'(?<![=!<>])=(?![=>])|\+\+|--|\.click\(|\.(?:append|remove|insert|set|replace)\w*\(|'
+                            r'innerHTML|localStorage|sessionStorage|fetch\(|eval\(|\bawait\b|defineProperty|'
+                            r'Object\.assign|\bnew\s+(?:File|Blob|DataTransfer|\w*Event|MutationObserver)\b|\.on\w+\(')
 
 
-def _console_read_only(text: str) -> bool:
-    """录屏步骤里的控制台脚本是否只读：步骤写明控制台，脚本里没有赋值、点击、增删改页面或存储的写法。"""
-    return '控制台' in text and not _CONSOLE_WRITE.search(text)
+def _console_issue(text: str):
+    """录屏步骤里有控制台脚本、又不是只读读取精确像素时，返回命中的片段；没问题返回 None。"""
+    m = _CONSOLE_JS.search(text)
+    if not m:
+        return None
+    if _CONSOLE_PIXEL.search(text) and not _CONSOLE_WRITE.search(text):
+        return None
+    return m.group(0)
 
 
 def record_issues(steps, prep=None) -> list[dict]:
@@ -567,9 +579,9 @@ def record_issues(steps, prep=None) -> list[dict]:
             m = re.search(pat, text)
             if m:
                 issues.append({'rule': f'第{n}步 {rule}', 'excerpt': m.group(0)[:60]})
-        m = re.search(_CONSOLE_RULE[0], text)
-        if m and not _console_read_only(text):
-            issues.append({'rule': f'第{n}步 {_CONSOLE_RULE[1]}', 'excerpt': m.group(0)[:60]})
+        hit = _console_issue(text)
+        if hit:
+            issues.append({'rule': f'第{n}步 {_CONSOLE_RULE}', 'excerpt': hit[:60]})
     # 录屏前准备与收尾不录，只查命令能否在录屏目录终端里直接执行
     for key, name in (('setup', '录屏前准备'), ('cleanup', '录完收尾')):
         text = str((prep or {}).get(key) or '')

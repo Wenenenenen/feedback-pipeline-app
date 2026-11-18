@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { clamp, gauss, humanPath, rand, sleep, typingDelays } from './human.mjs';
+import { clamp, gauss, humanPath, isLongText, rand, sleep, typingDelays } from './human.mjs';
 import { tailPad } from './muxutil.mjs';
 
 const require = createRequire(import.meta.url);
@@ -148,7 +148,16 @@ async function main() {
         await b.button(btn, false);
       }
     },
-    type: (text, base = 70) => b.typeText(text, typingDelays(text, base)),
+    // 系统键盘输入（终端、地址栏、文件名框）：逐字打；超过 200 字的单行文本改为粘贴
+    //（多行文本粘贴进 Windows Terminal 会弹多行粘贴确认框，仍逐字打）
+    async type(text, base = 70) {
+      if (isLongText(text) && !String(text).includes('\n')) {
+        emit('paste', { chars: [...String(text)].length });
+        await b.pasteText(String(text));
+        return;
+      }
+      await b.typeText(text, typingDelays(text, base));
+    },
   };
 
   // 页面坐标（CSS 像素）转屏幕坐标
@@ -211,11 +220,18 @@ async function main() {
       await human.click(opts.button || 'left', opts.clickCount || 1);
       await sleep(rand(100, 220));
     },
-    // 点中输入框后逐字输入，字与字之间的间隔有快有慢
+    // 点中输入框后逐字输入，字与字之间的间隔有快有慢；超过 200 字的长文本改为粘贴
     async type(t, text, opts = {}) {
       await ctx.click(t);
       await sleep(rand(150, 350));
-      await b.typeInPage(String(text), typingDelays(text, opts.delay ?? 85));
+      if (isLongText(text)) {
+        // 超过 200 字的长文本与人一样粘贴，不逐字打
+        emit('paste', { chars: [...String(text)].length });
+        await b.pasteInPage(String(text));
+        await sleep(rand(250, 500));
+      } else {
+        await b.typeInPage(String(text), typingDelays(text, opts.delay ?? 85));
+      }
     },
     // 系统按键（xdotool 写法，如 ctrl+a、Return、F5），发给当前窗口
     async key(combo, opts = {}) {

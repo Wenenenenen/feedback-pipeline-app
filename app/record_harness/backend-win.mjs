@@ -218,6 +218,9 @@ export async function createBackend(args, emit) {
   b.key = combo => helper.req('key', { combo: String(combo).trim(), hold: rand(0.05, 0.11) });
   b.typeText = (text, delays) => helper.req('text', { text: String(text), delays: delays.map(d => d / 1000) });
   b.typeInPage = b.typeText;
+  // 粘贴（超长文本用）：文本放进系统剪贴板后按 Ctrl+V（网页输入框、地址栏、Windows Terminal 都支持）
+  b.pasteText = text => helper.req('paste', { text: String(text) });
+  b.pasteInPage = b.pasteText;
 
   // 页面视口左上角的屏幕坐标与缩放：Chrome 的网页内容子窗口
   b.viewport = async () => {

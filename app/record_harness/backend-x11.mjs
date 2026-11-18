@@ -185,6 +185,11 @@ export async function createBackend(args, emit) {
     }
   };
 
+  // 粘贴（超长文本用）：虚拟屏里没有剪贴板工具，网页输入框用浏览器一次插入整段文字（画面上与粘贴一样）；
+  // 终端、地址栏仍逐字输入，只是打得快一些
+  b.pasteInPage = text => page.keyboard.insertText(String(text));
+  b.pasteText = text => b.typeText(text, [...String(text)].map(() => 12));
+
   // 页面视口左上角的屏幕坐标与缩放
   b.viewport = async () => page.evaluate(() => ({ x: window.screenX + (window.outerWidth - window.innerWidth),
     y: window.screenY + (window.outerHeight - window.innerHeight), dpr: 1 }));

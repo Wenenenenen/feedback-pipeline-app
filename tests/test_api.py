@@ -653,18 +653,25 @@ def test_record_issues(client):
     assert any(r.startswith('第1步') and '录屏前准备' in r for r in rules)
     assert any(r.startswith('第2步') and '临时脚本' in r for r in rules)
     assert any(r.startswith('第3步') and '控制台脚本' in r for r in rules)
-    # 写明在控制台只读取精确像素的一行脚本放行；带赋值、点击或改存储的控制台脚本仍算注入
+    # 只读读取精确像素的一行控制台脚本放行
     read_px = [{'action': '打开浏览器控制台执行一行只读命令 读取插入像素',
                 'command': "(c=>Array.from(c.getContext('2d').getImageData(1,1,1,1).data))"
                            "(document.querySelector('#canvas'))",
                 'expect': '控制台返回[128,128,128,255]'}]
     assert pipeline.record_issues(read_px) == []
+    # 其余控制台脚本都拦下：赋值、点击、改存储、读其他数值、不带 document 的注入（改像素比、调用页面函数）、读像素又改页面
     for cmd in ("document.querySelector('#w').value = 3", "document.querySelector('#go').click()",
-                "window.localStorage.clear()"):
-        rules = [i['rule'] for i in pipeline.record_issues([{'action': '控制台执行', 'command': cmd, 'expect': ''}])]
+                "window.localStorage.clear()", "console.log(document.querySelector('#out').textContent)",
+                "const qa=await(await fetch('.qa/a.wav')).arrayBuffer();loadAudio(qa);"
+                "Object.defineProperty(window,'devicePixelRatio',{value:2});state.view.f1=4000",
+                "(c=>c.getContext('2d').getImageData(0,0,1,1).data)(document.querySelector('#v'));"
+                "document.querySelector('#v').width=3"):
+        rules = [i['rule'] for i in pipeline.record_issues([{'action': '控制台执行 模拟像素比2', 'command': cmd,
+                                                              'expect': ''}])]
         assert any('控制台脚本' in r for r in rules), cmd
-    # 没写明是在控制台读取的仍按注入处理
-    assert pipeline.record_issues([{'action': '执行', 'command': 'document.title', 'expect': ''}])
+    # 普通终端命令、网址不算控制台脚本
+    assert pipeline.record_issues([{'action': '打开页面', 'command': 'http://localhost:20800/', 'expect': ''},
+                                   {'action': '查看', 'command': 'ls -la .qa && cat .qa/out.txt', 'expect': ''}]) == []
     # 录屏前准备也要能在录屏目录终端里直接执行
     bad_prep = {'setup': "wsl.exe -d Ubuntu-24.04 -- bash -ic 'npm i'", 'cleanup': ''}
     assert any(i['rule'].startswith('录屏前准备') for i in pipeline.record_issues([], bad_prep))
