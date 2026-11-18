@@ -145,6 +145,14 @@ def list_tasks(status: str | None = None) -> list[dict]:
         return [_decode(r) for r in conn().execute(sql, args).fetchall()]
 
 
+def list_generated_topics() -> list[dict]:
+    """出过的全部题目（含已删除的），出题查重用：只取分支名、领域、子方向、题目原文与是否已删除。"""
+    with _lock:
+        rows = conn().execute('SELECT branch, domain, subdomain, user_prompt, deleted FROM qa_task '
+                              'ORDER BY id').fetchall()
+    return [dict(r) for r in rows]
+
+
 def delete_task(task_id: int):
     """逻辑删除（分支名唯一索引只约束未删除记录）。"""
     with _lock:

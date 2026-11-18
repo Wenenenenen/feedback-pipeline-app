@@ -938,3 +938,14 @@ def test_upload_names_follow_client_seq(client, tmp_path):
     client.post(f"/api/tasks/{t['id']}/action/client_seq", json={'client_seq': ''})
     t = db.get_task(t['id'])
     assert t['trajectory_path'] == str(d / 'demo.jsonl') and t['recording_link'] == str(old_rec)
+
+
+def test_gen_input_lists_deleted_topics():
+    """出题查重的已有题目包括已删除的题，删掉的题标注已删除。"""
+    keep = new_task(branch='kept-topic', user_prompt='保留的题目原文')
+    gone = new_task(branch='gone-topic', user_prompt='删掉的题目原文')
+    db.delete_task(gone)
+    text = pipeline.describe_input('qa-gen', None, {'count': 1, 'domain': '游戏、图形与多媒体'})
+    assert 'kept-topic |' in text and '保留的题目原文' in text
+    assert 'gone-topic（已删除） |' in text and '删掉的题目原文' in text
+    assert keep

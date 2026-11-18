@@ -176,11 +176,12 @@ def _gen_input(params: dict, run_key: str = '预览') -> str:
     for d, subs in DOMAINS.items():
         lines.append(f"{d}：{'、'.join(subs)}")
     lines += ['', '库内已有题目（用于查重 不得与其雷同）']
-    existing = db.list_tasks()
+    # 出过的题都算，包括已删除的：删掉的题也可能已交给甲方或出过，不能再出一遍
+    existing = db.list_generated_topics()
     if not existing:
         lines.append('无')
     for t in existing:
-        lines.append(f"- {t['branch']} | {t['domain']}/{t['subdomain']} | "
+        lines.append(f"- {t['branch']}{'（已删除）' if t['deleted'] else ''} | {t['domain']}/{t['subdomain']} | "
                      f"{re.sub(r'\s+', ' ', t['user_prompt'])[:150]}")
     return '\n'.join(lines)
 
