@@ -49,6 +49,9 @@ export default async function run(ctx) {
 - `ctx.moveTo(目标, {dx, dy, ms})`：只移动指针（悬停提示、悬停高亮），落点规则同上；
 - `ctx.type(目标, 文字)`：点中输入框后逐字输入，节奏有快有慢；超过 200 字的长文本与人一样直接粘贴；
 - `ctx.key(按键)`：系统按键，xdotool 写法，如 `ctrl+a`、`Return`、`Delete`，发给当前窗口；
+- `ctx.hold(按键, 毫秒或等待函数, {timeout 秒})`：按住按键一段时间再松开，如 `ctx.hold('Right', 1500)` 让角色向右走 1.5 秒；第二个参数也可以是等待函数，等页面上出现某个现象就松开，如 `ctx.hold('a', () => ctx.page.locator('#count').filter({ hasText: '1 个' }).waitFor())`，超过 `timeout`（默认 10）秒没出现会报错；与真键盘一样，按住约半秒后开始自动重复（keydown 的 repeat 为 true），按住期间再按别的键原来的键就不再重复；
+- `ctx.keyDown(按键)`、`ctx.keyUp(按键)`：分开按下与松开，用于按住一个键的同时再按别的键（如按住 `Right` 时按一下 `j` 出招），按下的键一定要松开（脚本出错时执行器也会兜底松开）；
+- `ctx.drag(起点, 终点, {button, ms, from})`：拖动，指针移到起点、按下、沿人手的轨迹移到终点、松开；起点、终点的写法同 `moveTo`（`from` 是起点的 `{dx, dy}`），终点可以是数组（依次经过多个点），也可以写 `{dx, dy}` 表示从当前位置按页面像素偏移，如 `ctx.drag('#view', { dx: 240, dy: 0 })` 在画布上横向拖动旋转视角；`button` 取 `left`、`right`、`middle`（默认 left），`ms` 是每段移动的时长；拖动画墙、框选、拖滑块、转视角都用它；
 - `ctx.upload(目标, 文件路径)`：点上传按钮（`<input type=file>` 或会打开它的按钮、label），在弹出的系统文件选择框里选中文件；文件路径写录屏目录下的 WSL 路径，正式录制时流水线会先把它放进「下载」下以分支命名的文件夹，对话框打开在那里，在文件列表里双击这个文件；页面要求一次多选一组文件（输入框带 `multiple`）时第二个参数传数组，如 `` [`${ctx.cwd}/.qa/g/a.png`, `${ctx.cwd}/.qa/g/manifest.json`] ``，正式录制时在文件名框里输入带引号的文件名列表后回车，试跑（虚拟屏）时直接设置文件；同一次多选的文件名不能重复，多选不是人工录屏的理由；
 - `ctx.console(表达式, {pause 毫秒, close})`：按 Ctrl+Shift+J 打开开发者工具的控制台，逐字输入一行表达式后回车，返回值停留 `pause`（默认 2500）毫秒后按 F12 关掉（`close: false` 时不关）；只用于录屏步骤里只读地读取精确像素（如 `getImageData`），表达式写成一行、不改页面状态，其他数值一律从页面上读；
 - `ctx.reload()`：指针移到浏览器的刷新按钮点击，等页面加载完；`ctx.goto(网址)`：点地址栏、打出网址回车，等页面加载完；都可以加 `{waitUntil: 'networkidle'}`；
@@ -83,11 +86,11 @@ await ctx.upload('text=导入文件', `${ctx.cwd}/.qa/broken.wav`);
 
 - `run` 部分在时长上限减 5 秒内结束，按录屏步骤的顺序逐步执行，每步开头调用 `ctx.step`；每个现象出现后 `ctx.sleep(1500)` 到 `3000` 让画面停留，整体节奏不要太快也不要拖。
 - 只录 Feedback 里写到的内容，失败项照录；不在录屏里跑临时脚本、注入控制台脚本或改页面状态，证据放在页面上的正常操作里。录屏步骤本身要求使用控制台脚本定位精确像素时，用 `ctx.console` 在画面上执行（不要用 `ctx.page.evaluate`，那样画面上看不到返回值）。
-- `run` 里不用 `page.reload`、`page.goto`、`locator.click`、`locator.fill`、`selectOption`、`setInputFiles`、`page.keyboard` 做动作（画面上看不到对应的操作，一看就是脚本），分别换成 `ctx.reload`、`ctx.goto`、`ctx.click`、`ctx.type`、`ctx.select`、`ctx.upload`、`ctx.key`；`prepare` 不录，可以随意用。
+- `run` 里不用 `page.reload`、`page.goto`、`locator.click`、`locator.fill`、`selectOption`、`setInputFiles`、`page.keyboard`、`page.mouse` 做动作（画面上看不到对应的操作，一看就是脚本），分别换成 `ctx.reload`、`ctx.goto`、`ctx.click`、`ctx.type`、`ctx.select`、`ctx.upload`、`ctx.key`、`ctx.hold`、`ctx.drag`；也不要在脚本里直接调 `xdotool`（正式录制在本机桌面时没有 xdotool，会直接失败）；`prepare` 不录，可以随意用。
 - 不调用 `page.pause`、不等待人工输入，不打开新的浏览器，不改动录屏目录里的已提交文件；脚本里不写死试跑生成的临时数据。
 - 以下情况无法自动录屏，`manual_needed` 设为 true，`reason` 写清原因，`script` 给空字符串：
   - 正式录制也在虚拟屏、现象又依赖真显卡（如 WebGPU 渲染、软件渲染下帧率过低导致无法展示问题）且没有替代展示方式；正式录制在本机桌面时有真显卡，不按这条判人工：操作步骤照常写，试跑时看不到的渲染结果，相关的检查用 `if (!ctx.dryRun)` 包起来只在正式录制时做，`reason` 里注明哪些现象试跑时无法核对；
-  - 需要摄像头、麦克风、手柄等外设，或需要操作系统原生窗口（非浏览器、非终端）；
+  - 需要摄像头、麦克风、手柄等外设，或需要操作系统原生窗口（非浏览器、非终端）；拖动、按住按键、边按住边按别的键都有接口，不是人工录屏的理由；
   - 反复试跑仍无法稳定复现录屏步骤中的现象。
 
 ## 输出

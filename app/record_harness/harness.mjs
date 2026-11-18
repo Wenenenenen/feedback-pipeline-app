@@ -181,6 +181,19 @@ async function main() {
     await sleep(rand(300, 600));
   }
 
+  // 还按着的键与鼠标键：脚本出错或被打断时在收尾统一松开，不能让按键卡在按下状态
+  const held = { keys: new Set(), buttons: new Set() };
+  async function releaseHeld() {
+    for (const k of [...held.keys].reverse()) {
+      await b.keyUp(k).catch(() => {});
+      held.keys.delete(k);
+    }
+    for (const btn of [...held.buttons]) {
+      await b.button(btn, false).catch(() => {});
+      held.buttons.delete(btn);
+    }
+  }
+
   const ensureBrowser = async () => { if (b.front() !== 'browser') await b.raise('browser'); };
   const target = t => (typeof t === 'string' ? page.locator(t).first() : t);
   const isPoint = t => t && typeof t === 'object' && typeof t.x === 'number' && typeof t.y === 'number';
@@ -237,6 +250,66 @@ async function main() {
     async key(combo, opts = {}) {
       await b.key(combo);
       await sleep(opts.pause ?? rand(150, 300));
+    },
+    // 按下不放（写法同 key，组合键按顺序依次按下），之后要用 keyUp 松开；用于按住方向键的同时再按别的键
+    async keyDown(combo) {
+      await ensureBrowser();
+      await b.keyDown(combo);
+      held.keys.add(combo);
+      emit('key-down', { combo });
+    },
+    async keyUp(combo) {
+      await b.keyUp(combo);
+      held.keys.delete(combo);
+      emit('key-up', { combo });
+    },
+    // 按住按键一段时间再松开：第二个参数是毫秒数，或者一个等待函数（等页面上出现某个现象就松开，超过 timeout 秒报错）
+    async hold(combo, msOrUntil, opts = {}) {
+      await ctx.keyDown(combo);
+      try {
+        if (typeof msOrUntil === 'function') {
+          const sec = opts.timeout ?? 10;
+          await Promise.race([msOrUntil(), sleep(sec * 1000).then(() => {
+            throw new Error(`按住 ${combo} 等待的现象 ${sec} 秒内没有出现`);
+          })]);
+        } else {
+          await sleep(Number(msOrUntil) || 0);
+        }
+      } finally {
+        await ctx.keyUp(combo);
+      }
+      await sleep(opts.pause ?? rand(150, 300));
+    },
+    // 拖动：指针移到起点、按下、沿人手的轨迹移到终点（可以给多个途经点）、松开。
+    // 起点、终点的写法同 moveTo；终点也可以写 {dx, dy}，表示从当前位置按页面像素偏移（如在画布上拖动旋转视角）
+    async drag(from, to, opts = {}) {
+      await ensureBrowser();
+      const btn = opts.button || 'left';
+      const stops = Array.isArray(to) ? to : [to];
+      if (!stops.length) throw new Error('ctx.drag 至少要给一个终点');
+      await ctx.moveTo(from, opts.from || {});
+      await sleep(opts.hover ?? rand(150, 300));
+      await b.button(btn, true);
+      held.buttons.add(btn);
+      emit('drag', { button: btn, stops: stops.length });
+      try {
+        await sleep(rand(90, 160));
+        for (const s of stops) {
+          const ms = opts.ms ?? rand(500, 900);
+          if (s && typeof s === 'object' && !isPoint(s) && (s.dx !== undefined || s.dy !== undefined)
+              && typeof s.locator !== 'function' && typeof s.boundingBox !== 'function') {
+            const v = await b.viewport();
+            await human.moveTo(mouse.x + (s.dx || 0) * v.dpr, mouse.y + (s.dy || 0) * v.dpr, ms);
+          } else {
+            await ctx.moveTo(s, { ms });
+          }
+          await sleep(opts.pause ?? rand(60, 140));
+        }
+      } finally {
+        await b.button(btn, false);
+        held.buttons.delete(btn);
+      }
+      await sleep(rand(150, 300));
     },
     // 在浏览器开发者工具的控制台里执行一行表达式，画面上看得到打开控制台、逐字输入和返回值：
     // 只用于录屏步骤要求读取精确像素等页面上没有入口的数值；默认看完结果后关掉开发者工具
@@ -483,6 +556,7 @@ async function main() {
     emit('error', { message: String(e.message || e).slice(0, 1500) });
     if (!interrupted) await grab(path.join(shotDir, 'error.png')).catch(() => {});
   } finally {
+    await releaseHeld();
     if (capture) {
       // 停止录制的墙钟时刻（秒），合成时据此补足结尾静止的画面
       stopWall = Date.now() / 1000;

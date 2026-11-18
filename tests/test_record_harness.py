@@ -109,3 +109,26 @@ def test_long_text_pastes():
     assert 'b.pasteInPage(String(text))' in h and 'b.pasteText(String(text))' in h
     assert "helper.req('paste'" in (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
     assert 'SetClipboardData(CF_UNICODETEXT' in (HARNESS / 'wininput.py').read_text(encoding='utf-8')
+
+
+def test_drag_and_hold():
+    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    # 拖动：按下、移动、在 finally 里松开；按住：keyDown 与 keyUp 成对，等待函数超时报错
+    assert 'async drag(from, to' in h and 'await b.button(btn, true)' in h and 'await b.button(btn, false)' in h
+    assert 'async hold(combo, msOrUntil' in h and 'async keyDown(combo)' in h and 'async keyUp(combo)' in h
+    # 收尾统一松开还按着的键与鼠标键，在关闭窗口之前
+    i, j = h.index('await releaseHeld()'), h.index('await b.close();\n  }')
+    assert i < j
+    win = (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
+    assert "helper.req('keydown'" in win and "helper.req('keyup'" in win
+    x11 = (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
+    assert "xdo('keydown'" in x11 and "xdo('keyup'" in x11
+    helper = (HARNESS / 'wininput.py').read_text(encoding='utf-8')
+    # Windows 助手：按住与松开、退出时兜底松开，按键带扫描码（浏览器的 KeyboardEvent.code 靠它）
+    assert "op == 'keydown'" in helper and "op == 'keyup'" in helper and 'release_all()' in helper
+    assert 'MapVirtualKeyW(vk, 0)' in helper
+    # 按住时与真键盘一样自动重复（系统的重复延迟与速度），松开或按别的键时停止
+    assert 'def repeat_timing' in helper and '_start_repeat(vks[-1])' in helper and '_stop_repeat(vk)' in helper
+    s = SKILL.read_text(encoding='utf-8')
+    assert 'ctx.drag(' in s and 'ctx.hold(' in s and 'ctx.keyDown(' in s
+    assert '不要在脚本里直接调 `xdotool`' in s and '不是人工录屏的理由' in s and '自动重复' in s

@@ -168,6 +168,9 @@ export async function createBackend(args, emit) {
     }
   };
   b.key = combo => xdo('key', '--delay', Math.round(rand(60, 120)), ...String(combo).split(/\s+/).filter(Boolean));
+  // 按住与松开（xdotool 的 keydown、keyup，组合键写法同 key）
+  b.keyDown = combo => xdo('keydown', ...String(combo).split(/\s+/).filter(Boolean));
+  b.keyUp = combo => xdo('keyup', ...String(combo).split(/\s+/).filter(Boolean));
   // 系统键盘逐字输入（终端、地址栏、文件选择框）
   b.typeText = async (text, delays) => {
     const chars = [...String(text)];

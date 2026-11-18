@@ -216,6 +216,9 @@ export async function createBackend(args, emit) {
     }
   };
   b.key = combo => helper.req('key', { combo: String(combo).trim(), hold: rand(0.05, 0.11) });
+  // 按住与松开（组合键按顺序按下、倒序松开）；助手退出时会松开所有还按着的键
+  b.keyDown = combo => helper.req('keydown', { combo: String(combo).trim() });
+  b.keyUp = combo => helper.req('keyup', { combo: String(combo).trim() });
   b.typeText = (text, delays) => helper.req('text', { text: String(text), delays: delays.map(d => d / 1000) });
   b.typeInPage = b.typeText;
   // 粘贴（超长文本用）：文本放进系统剪贴板后按 Ctrl+V（网页输入框、地址栏、Windows Terminal 都支持）

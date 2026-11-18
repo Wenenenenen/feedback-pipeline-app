@@ -140,6 +140,9 @@ def _key(vk: int = 0, up: bool = False, scan: int = 0, unicode: bool = False) ->
     flags = (KEYEVENTF_KEYUP if up else 0) | (KEYEVENTF_UNICODE if unicode else 0)
     if vk in EXTENDED:
         flags |= KEYEVENTF_EXTENDEDKEY
+    # 带上扫描码，与真键盘一样：浏览器的 KeyboardEvent.code（如 KeyA、ArrowRight）按扫描码判断，网页游戏多用它
+    if vk and not unicode and not scan:
+        scan = user32.MapVirtualKeyW(vk, 0) & 0xFFFF
     i.u.ki = KEYBDINPUT(vk, scan, flags, 0, MARK)
     return i
 
@@ -183,7 +186,13 @@ def move_path(pts: list, dt: float):
         _wait_until(t)
 
 
+# 还按着的键（虚拟键码，按下顺序）与鼠标键，助手退出时统一松开
+_held_keys: list[int] = []
+_held_buttons: set[str] = set()
+
+
 def button(btn: str, down: bool):
+    (_held_buttons.add if down else _held_buttons.discard)(btn)
     flags = {('left', True): MOUSEEVENTF_LEFTDOWN, ('left', False): MOUSEEVENTF_LEFTUP,
              ('right', True): MOUSEEVENTF_RIGHTDOWN, ('right', False): MOUSEEVENTF_RIGHTUP,
              ('middle', True): MOUSEEVENTF_MIDDLEDOWN, ('middle', False): MOUSEEVENTF_MIDDLEUP}[(btn, down)]
@@ -207,6 +216,8 @@ def _vk_of(name: str) -> int:
 def key(combo: str, hold: float = 0.06):
     """按组合键，如 ctrl+a、Return、F5：修饰键依次按下，主键按下松开，再倒序松开修饰键。"""
     vks = [_vk_of(p) for p in combo.split('+') if p]
+    # 按住某个键时再按别的键，原来那个键不再自动重复（与真键盘一样）
+    _stop_repeat()
     for vk in vks:
         _send(_key(vk))
         time.sleep(0.02)
@@ -214,6 +225,81 @@ def key(combo: str, hold: float = 0.06):
     for vk in reversed(vks):
         _send(_key(vk, up=True))
         time.sleep(0.02)
+
+
+# 自动重复：与真键盘一样，只有最后按下的键在按住超过重复延迟后按重复速度连续触发按下
+_repeat_lock = threading.Lock()
+_repeat = {'vk': None, 'gen': 0}
+
+
+def repeat_timing() -> tuple[float, float]:
+    """系统设置里的重复延迟（秒）与重复间隔（秒）：延迟档 0 到 3 对应约 250 到 1000 毫秒，速度档 0 到 31 对应每秒约 2.5 到 30 次。"""
+    delay, speed = wintypes.UINT(), wintypes.DWORD()
+    user32.SystemParametersInfoW(0x0016, 0, ctypes.byref(delay), 0)
+    user32.SystemParametersInfoW(0x000A, 0, ctypes.byref(speed), 0)
+    return 0.25 * (min(delay.value, 3) + 1), 1.0 / (2.5 + min(speed.value, 31) * 27.5 / 31)
+
+
+def _start_repeat(vk: int):
+    with _repeat_lock:
+        _repeat['gen'] += 1
+        gen = _repeat['gen']
+        _repeat['vk'] = vk
+
+    def run():
+        first, every = repeat_timing()
+        time.sleep(first)
+        while True:
+            with _repeat_lock:
+                if _repeat['gen'] != gen or vk not in _held_keys:
+                    return
+                _send(_key(vk))
+            time.sleep(every)
+    threading.Thread(target=run, daemon=True, name='key-repeat').start()
+
+
+def _stop_repeat(vk: int | None = None):
+    with _repeat_lock:
+        if vk is None or _repeat['vk'] == vk:
+            _repeat['gen'] += 1
+            _repeat['vk'] = None
+
+
+def key_down(combo: str):
+    """按下不放：组合键按顺序依次按下（如 shift+right），之后用 key_up 松开；按住时最后一个键自动重复。"""
+    vks = [_vk_of(p) for p in combo.split('+') if p]
+    for vk in vks:
+        with _repeat_lock:
+            _send(_key(vk))
+            _held_keys.append(vk)
+        time.sleep(0.02)
+    if vks:
+        _start_repeat(vks[-1])
+
+
+def key_up(combo: str):
+    """松开 key_down 按下的键，倒序松开。"""
+    for vk in reversed([_vk_of(p) for p in combo.split('+') if p]):
+        _stop_repeat(vk)
+        with _repeat_lock:
+            _send(_key(vk, up=True))
+            if vk in _held_keys:
+                _held_keys.remove(vk)
+        time.sleep(0.02)
+
+
+def release_all():
+    """松开所有还按着的键与鼠标键（执行器出错或退出时兜底，不让按键卡住）。"""
+    _stop_repeat()
+    with _repeat_lock:
+        for vk in reversed(list(_held_keys)):
+            with contextlib.suppress(Exception):
+                _send(_key(vk, up=True))
+        _held_keys.clear()
+    for btn in list(_held_buttons):
+        with contextlib.suppress(Exception):
+            button(btn, False)
+    _held_buttons.clear()
 
 
 def text(s: str, delays: list | None = None):
@@ -611,6 +697,12 @@ def handle(req: dict):
         key(req['combo'], float(req.get('hold', 0.06)))
     elif op == 'text':
         text(req['text'], req.get('delays'))
+    elif op == 'keydown':
+        key_down(req['combo'])
+    elif op == 'keyup':
+        key_up(req['combo'])
+    elif op == 'release':
+        release_all()
     elif op == 'paste':
         paste(req['text'], req.get('combo', 'ctrl+v'))
     elif op == 'windows':
@@ -661,7 +753,9 @@ def serve():
             except Exception as e:  # noqa: BLE001 - 出错原样回给执行器
                 emit({'id': req.get('id'), 'ok': False, 'error': f'{type(e).__name__}: {e}'})
     finally:
-        # 执行器退出（标准输入关闭）时兜底：恢复勿扰与屏幕常亮
+        # 执行器退出（标准输入关闭）时兜底：松开还按着的键，恢复勿扰与屏幕常亮
+        with contextlib.suppress(Exception):
+            release_all()
         with contextlib.suppress(Exception):
             quiet_restore()
         awake(False)
