@@ -218,6 +218,9 @@ export async function createBackend(args, emit) {
   b.key = combo => helper.req('key', { combo: String(combo).trim(), hold: rand(0.05, 0.11) });
   b.typeText = (text, delays) => helper.req('text', { text: String(text), delays: delays.map(d => d / 1000) });
   b.typeInPage = b.typeText;
+  // 粘贴：文本放进系统剪贴板后按 Ctrl+V（网页输入框、地址栏、文件名框、Windows Terminal 都支持）
+  b.pasteText = text => helper.req('paste', { text: String(text) });
+  b.pasteInPage = b.pasteText;
 
   // 页面视口左上角的屏幕坐标与缩放：Chrome 的网页内容子窗口
   b.viewport = async () => {
@@ -263,7 +266,7 @@ export async function createBackend(args, emit) {
       await helper.req('key', { combo: 'alt+n', hold: rand(0.05, 0.1) });
       await sleep(rand(200, 400));
       emit('upload-multi', { names, via: 'dialog' });
-      await human.type(names.map(n => `"${n}"`).join(' '), 45);
+      await human.paste(names.map(n => `"${n}"`).join(' '));
       await sleep(rand(400, 700));
       await helper.req('key', { combo: 'return' });
       for (let i = 0; i < 60; i++) {
@@ -294,7 +297,7 @@ export async function createBackend(args, emit) {
     } else {
       // 找不到列表项时退回到在文件名框里输入文件名回车（文件名框默认有焦点）
       emit('upload-fallback', { name });
-      await human.type(name, 55);
+      await human.paste(name);
       await sleep(rand(400, 700));
       await helper.req('key', { combo: 'return' });
     }

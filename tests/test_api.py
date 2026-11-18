@@ -653,6 +653,18 @@ def test_record_issues(client):
     assert any(r.startswith('第1步') and '录屏前准备' in r for r in rules)
     assert any(r.startswith('第2步') and '临时脚本' in r for r in rules)
     assert any(r.startswith('第3步') and '控制台脚本' in r for r in rules)
+    # 写明在控制台只读取精确像素的一行脚本放行；带赋值、点击或改存储的控制台脚本仍算注入
+    read_px = [{'action': '打开浏览器控制台执行一行只读命令 读取插入像素',
+                'command': "(c=>Array.from(c.getContext('2d').getImageData(1,1,1,1).data))"
+                           "(document.querySelector('#canvas'))",
+                'expect': '控制台返回[128,128,128,255]'}]
+    assert pipeline.record_issues(read_px) == []
+    for cmd in ("document.querySelector('#w').value = 3", "document.querySelector('#go').click()",
+                "window.localStorage.clear()"):
+        rules = [i['rule'] for i in pipeline.record_issues([{'action': '控制台执行', 'command': cmd, 'expect': ''}])]
+        assert any('控制台脚本' in r for r in rules), cmd
+    # 没写明是在控制台读取的仍按注入处理
+    assert pipeline.record_issues([{'action': '执行', 'command': 'document.title', 'expect': ''}])
     # 录屏前准备也要能在录屏目录终端里直接执行
     bad_prep = {'setup': "wsl.exe -d Ubuntu-24.04 -- bash -ic 'npm i'", 'cleanup': ''}
     assert any(i['rule'].startswith('录屏前准备') for i in pipeline.record_issues([], bad_prep))

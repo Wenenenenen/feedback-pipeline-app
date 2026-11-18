@@ -537,9 +537,18 @@ _RECORD_ONLY_RULES = [
      '安装依赖或启动结束服务 放到不录的录屏前准备与收尾'),
     (r'<<|\bpython3?\s+-\s|\bnode\s+-e\b',
      '在录屏里跑临时脚本复现 改成产物页面上的正常操作 需要的输入文件在录屏前准备里生成'),
-    (r'document\.|window\.|dispatchEvent|createObjectURL',
+    (r'dispatchEvent|createObjectURL',
      '用控制台脚本复现 除非必须定位精确像素 改成产物页面上的正常操作'),
 ]
+# 控制台脚本：步骤写明在控制台只读取数值（如精确像素）时放行，带赋值、点击、改动页面或存储的仍算注入
+_CONSOLE_RULE = (r'document\.|window\.', '用控制台脚本复现 除非必须定位精确像素 改成产物页面上的正常操作')
+_CONSOLE_WRITE = re.compile(r'(?<![=!<>])=(?![=>])|\.click\(|\.(?:append|remove|insert|set|replace)\w*\(|'
+                            r'innerHTML|textContent\s*=|localStorage|sessionStorage|fetch\(|eval\(')
+
+
+def _console_read_only(text: str) -> bool:
+    """录屏步骤里的控制台脚本是否只读：步骤写明控制台，脚本里没有赋值、点击、增删改页面或存储的写法。"""
+    return '控制台' in text and not _CONSOLE_WRITE.search(text)
 
 
 def record_issues(steps, prep=None) -> list[dict]:
@@ -558,6 +567,9 @@ def record_issues(steps, prep=None) -> list[dict]:
             m = re.search(pat, text)
             if m:
                 issues.append({'rule': f'第{n}步 {rule}', 'excerpt': m.group(0)[:60]})
+        m = re.search(_CONSOLE_RULE[0], text)
+        if m and not _console_read_only(text):
+            issues.append({'rule': f'第{n}步 {_CONSOLE_RULE[1]}', 'excerpt': m.group(0)[:60]})
     # 录屏前准备与收尾不录，只查命令能否在录屏目录终端里直接执行
     for key, name in (('setup', '录屏前准备'), ('cleanup', '录完收尾')):
         text = str((prep or {}).get(key) or '')

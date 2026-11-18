@@ -75,3 +75,20 @@ def test_desktop_capture_marks_wallclock_and_mux_pads():
     assert 'wallclock: true' in win
     h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
     assert 'tpad=stop_mode=clone:stop_duration=' in h and 'stopWall = Date.now() / 1000' in h
+
+
+def test_text_input_pastes():
+    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    # 网页输入框、地址栏、单行终端命令默认粘贴，{typing: true} 时才逐字输入
+    assert 'b.pasteInPage(String(text))' in h and 'opts.typing' in h
+    assert 'await human.paste(url)' in h
+    assert "!cmd.includes('\\n')) await human.paste(cmd)" in h
+    # 两个后端都提供粘贴；本机桌面经剪贴板加 Ctrl+V，文件名框也用粘贴
+    win = (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
+    assert "helper.req('paste'" in win and 'human.paste(name)' in win
+    x11 = (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
+    assert 'b.pasteInPage = ' in x11 and 'b.pasteText = ' in x11
+    helper = (HARNESS / 'wininput.py').read_text(encoding='utf-8')
+    assert "op == 'paste'" in helper and 'SetClipboardData(CF_UNICODETEXT' in helper
+    s = SKILL.read_text(encoding='utf-8')
+    assert '粘贴文字' in s and '`{typing: true}`' in s

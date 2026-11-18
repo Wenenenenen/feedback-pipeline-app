@@ -228,6 +228,49 @@ def text(s: str, delays: list | None = None):
             time.sleep(max(0.0, float(delays[i])))
 
 
+CF_UNICODETEXT, GMEM_MOVEABLE = 13, 0x0002
+kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+kernel32.GlobalLock.restype = ctypes.c_void_p
+kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+user32.OpenClipboard.argtypes = [wintypes.HWND]
+user32.SetClipboardData.restype = wintypes.HANDLE
+user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+
+
+def set_clipboard(s: str):
+    """把文本放进系统剪贴板（Unicode 文本）；剪贴板被别的程序占着时稍等重试。"""
+    data = (s + '\0').encode('utf-16-le')
+    for _ in range(40):
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.05)
+    else:
+        raise OSError('打不开系统剪贴板')
+    try:
+        user32.EmptyClipboard()
+        h = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not h:
+            raise OSError('分配剪贴板内存失败')
+        ptr = kernel32.GlobalLock(h)
+        ctypes.memmove(ptr, data, len(data))
+        kernel32.GlobalUnlock(h)
+        if not user32.SetClipboardData(CF_UNICODETEXT, h):
+            kernel32.GlobalFree(h)
+            raise OSError('写入剪贴板失败')
+    finally:
+        user32.CloseClipboard()
+
+
+def paste(s: str, combo: str = 'ctrl+v'):
+    """与人一样粘贴：文本放进剪贴板后按 Ctrl+V，文字一次出现在当前焦点处。"""
+    set_clipboard(s)
+    time.sleep(0.08)
+    key(combo, 0.08)
+
+
 def _utf16_units(ch: str) -> list[int]:
     b = ch.encode('utf-16-le')
     return [int.from_bytes(b[i:i + 2], 'little') for i in range(0, len(b), 2)]
@@ -568,6 +611,8 @@ def handle(req: dict):
         key(req['combo'], float(req.get('hold', 0.06)))
     elif op == 'text':
         text(req['text'], req.get('delays'))
+    elif op == 'paste':
+        paste(req['text'], req.get('combo', 'ctrl+v'))
     elif op == 'windows':
         return {'windows': windows(bool(req.get('untitled')))}
     elif op == 'quiet':

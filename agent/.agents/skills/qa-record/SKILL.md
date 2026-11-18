@@ -47,13 +47,13 @@ export default async function run(ctx) {
 - `ctx.click(目标, {dx, dy, button, clickCount, hover})`：系统指针移过去再真实点击；目标可以是选择器字符串、Locator 或页面坐标 `{x, y}`；选择器目标的落点在中心附近随机，需要精确落点时给 `dx`、`dy`（相对中心）或页面坐标；点按钮、链接、画布、自己画的下拉菜单一律用它，不要用 `locator.click()` 或 `page.mouse`（那样画面上的指针不会动）；
 - `ctx.select(目标, 选项)`：原生下拉框（`<select>`）选一项：点开下拉框，指针移到列表里的目标项上点击，与人一样；选项写 value 或显示文字，也可以写 `{value}`、`{label}`、`{index}`；没选中会抛错。原生下拉框一律用它，不要用 `ctx.click` 点开后按 `End`、`Home` 或回车（画面上会直接跳到目标项，不像人操作），也不要用 `selectOption`；
 - `ctx.moveTo(目标, {dx, dy, ms})`：只移动指针（悬停提示、悬停高亮），落点规则同上；
-- `ctx.type(目标, 文字)`：点中输入框后逐字输入，节奏有快有慢；
+- `ctx.type(目标, 文字)`：点中输入框后粘贴文字（与人一样复制好再 Ctrl+V，文字一次出现，长文本也不用逐字打）；只有 Feedback 的问题本身与逐字键入有关（如输入过程中的联想、按键触发）时传 `{typing: true}` 改为逐字输入；
 - `ctx.key(按键)`：系统按键，xdotool 写法，如 `ctrl+a`、`Return`、`Delete`，发给当前窗口；
 - `ctx.upload(目标, 文件路径)`：点上传按钮（`<input type=file>` 或会打开它的按钮、label），在弹出的系统文件选择框里选中文件；文件路径写录屏目录下的 WSL 路径，正式录制时流水线会先把它放进「下载」下以分支命名的文件夹，对话框打开在那里，在文件列表里双击这个文件；页面要求一次多选一组文件（输入框带 `multiple`）时第二个参数传数组，如 `` [`${ctx.cwd}/.qa/g/a.png`, `${ctx.cwd}/.qa/g/manifest.json`] ``，正式录制时在文件名框里输入带引号的文件名列表后回车，试跑（虚拟屏）时直接设置文件；同一次多选的文件名不能重复，多选不是人工录屏的理由；
-- `ctx.console(表达式, {pause 毫秒, close})`：按 Ctrl+Shift+J 打开开发者工具的控制台，逐字输入一行表达式后回车，返回值停留 `pause`（默认 2500）毫秒后按 F12 关掉（`close: false` 时不关）；只用于录屏步骤里读取精确像素等页面上没有入口的数值，表达式写成一行、不改页面状态；
-- `ctx.reload()`：指针移到浏览器的刷新按钮点击，等页面加载完；`ctx.goto(网址)`：点地址栏、打出网址回车，等页面加载完；都可以加 `{waitUntil: 'networkidle'}`；
+- `ctx.console(表达式, {pause 毫秒, close})`：按 Ctrl+Shift+J 打开开发者工具的控制台，逐字输入一行表达式后回车（Chrome 控制台默认拦截粘贴，所以这里逐字输入），返回值停留 `pause`（默认 2500）毫秒后按 F12 关掉（`close: false` 时不关）；只用于录屏步骤里读取精确像素等页面上没有入口的数值，表达式写成一行、不改页面状态；
+- `ctx.reload()`：指针移到浏览器的刷新按钮点击，等页面加载完；`ctx.goto(网址)`：点地址栏、粘贴网址回车，等页面加载完；都可以加 `{waitUntil: 'networkidle'}`；
 - `ctx.scroll(格数)`：在浏览器里滚动鼠标滚轮，正数向下；
-- `ctx.term.run(命令, {timeout 秒, pause 毫秒})`：切到终端窗口，逐字打出命令并回车，等命令结束返回 `{code}`，命令失败不抛错；`ctx.term.show()` 只切到终端，`ctx.showBrowser()` 切回浏览器（之后的 click、moveTo 也会自动切回）；
+- `ctx.term.run(命令, {timeout 秒, pause 毫秒})`：切到终端窗口，粘贴命令并回车（多行命令逐字打出，`{typing: true}` 也改为逐字），等命令结束返回 `{code}`，命令失败不抛错；`ctx.term.show()` 只切到终端，`ctx.showBrowser()` 切回浏览器（之后的 click、moveTo 也会自动切回）；
 - `ctx.exec(命令, {timeout 秒})`：在录屏目录后台执行命令（不出现在画面上），返回 `{code, output}`，只用来在脚本里核对状态；
 - `ctx.step(序号, 说明)`：标记当前录到第几步，写进日志；
 - `ctx.sleep(毫秒)`：停顿，让画面上的结果停留看清；
