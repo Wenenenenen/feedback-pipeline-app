@@ -191,3 +191,5 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 > 状态（2026-11-19，凌晨巡检）：自动做题中途发现违规调用（子代理、MCP、非内置 skill）改为抛 `ForbiddenInterrupt`，与接口报错中断、卡住一样由 `run_do` 等待后作废会话重做，共用 `do_api_error_redo_max` 次数，超过上限才停下等人工。起因是 Claude Code 自带 Artifact 工具说明里提到 `artifact-capabilities`，干净环境里没有这个 skill（调用返回 Unknown skill），一晚有 12715 focus-pyramid-stack、13090 homogeneous-raster-proof、13582 gacha-pity-auditor 三道题因此停下；白名单不加它，仍按违规作废会话。新增 `test_run_do_redoes_on_forbidden_call`，162 个测试通过。
 
 > 状态（2026-11-19，凌晨巡检）：虚拟屏录屏的 GTK 文件框按上次选文件的目录打开，原来一律打录屏目录下的相对路径，同一段脚本里第二次从 `.qa/cases` 之类子目录选文件时路径拼错、对话框关不掉。`backend-x11.mjs` 记下上次目录：同目录只打文件名，在上次目录下打相对路径，其余打完整路径；补静态测试 `test_x11_file_dialog_path_follows_last_dir`，163 个测试通过。本晚 Codex 额度在 03:00 左右再次用完（07:21 恢复），12716、12718、13094、13095、13097、13099、13586、13587 八道题的录屏脚本由巡检 Agent 在同一套虚拟屏试跑环境里代写，试跑通过后写进 record_script 缓存，由流水线照常在本机桌面正式录制。
+
+> 状态（2026-11-19，凌晨巡检）：做题卡住判定只把 assistant、user 两类会话记录算作推进。原来所有带时间戳的记录都算推进，Claude Code 接口反复重试时每 30 多秒写一条 api-request，13098 cluster-light-inspector 从 00:44 起四个小时没有任何回复和工具调用，卡住判定一直没触发；巡检时手动停止并作废会话重做。`test_wait_done_stall` 补了只有 api-request 记录时判卡住的用例，163 个测试通过。

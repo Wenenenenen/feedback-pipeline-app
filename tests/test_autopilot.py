@@ -163,6 +163,15 @@ def test_wait_done_stall(fake_session, fake_clock, monkeypatch):
     with pytest.raises(claude_driver.StallInterrupt, match='做题卡住') as ei:
         claude_driver.wait_done('s', p, cfg, lambda m: None, threading.Event())
     assert '卡住' in autopilot.hints_for(P.S_DO, str(ei.value))[0]
+    # 接口反复重试时只写入带时间戳的 api-request 记录，也不算推进：累计静止达到上限照样判卡住
+    def retrying(path):
+        stamp = datetime.fromtimestamp(fake_clock[0], timezone.utc).isoformat().replace('+00:00', 'Z')
+        with p.open('a', encoding='utf-8') as f:
+            f.write(json.dumps({'type': 'api-request', 'timestamp': stamp}) + '\n')
+        return 'running'
+    monkeypatch.setattr(trajectory, 'turn_state', retrying)
+    with pytest.raises(claude_driver.StallInterrupt, match='做题卡住'):
+        claude_driver.wait_done('s', p, cfg, lambda m: None, threading.Event())
     # 设为 0 时不判卡住，只受做题超时约束
     with pytest.raises(claude_driver.DriverError, match='仍未做完'):
         claude_driver.wait_done('s', p, _cfg(do_stall_max_min=0, do_timeout_min=30), lambda m: None,

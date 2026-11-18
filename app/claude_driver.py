@@ -210,9 +210,15 @@ def _last_error_text(path: Path) -> str:
 FORBIDDEN_CHECK_SEC = 60
 
 
+# 算作做题推进的会话记录类型（模型回复、工具结果与用户输入）
+PROGRESS_TYPES = ('assistant', 'user')
+
+
 def _new_timestamps(path: Path, offset: int) -> tuple[list[float], int]:
     """读取会话文件 offset 之后新写入的完整行，返回其中各条记录的时间戳（秒）与新的读取位置。
-    没有时间戳的元数据行（mode、ai-title 等）不算推进，避免把卡住的时长切碎。"""
+    只有对话记录（assistant、user）算推进：元数据行（mode、ai-title 等）没有时间戳，
+    接口重试时每次请求写下的 api-request 等记录虽然带时间戳，也只说明在反复重试，都不算推进，
+    否则接口一直重试时轨迹看起来一直在动，卡住判定永远不会触发。"""
     with path.open('rb') as f:
         f.seek(offset)
         data = f.read()
@@ -222,8 +228,9 @@ def _new_timestamps(path: Path, offset: int) -> tuple[list[float], int]:
     out = []
     for line in data[:end].splitlines():
         try:
-            t = json.loads(line).get('timestamp')
-            if t:
+            rec = json.loads(line)
+            t = rec.get('timestamp')
+            if t and rec.get('type') in PROGRESS_TYPES:
                 out.append(datetime.fromisoformat(t.replace('Z', '+00:00')).timestamp())
         except (ValueError, AttributeError):
             continue
