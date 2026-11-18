@@ -243,9 +243,28 @@ def test_wait_done_stops_on_forbidden_call(fake_session):
     p, sent, states = fake_session
     write_jsonl(p, [_user('做个东西'), _assistant([{'type': 'tool_use', 'id': 'a1', 'name': 'Agent', 'input': {}}])])
     states(['running'] * 5)
-    with pytest.raises(claude_driver.DriverError, match='不允许的调用'):
+    with pytest.raises(claude_driver.ForbiddenInterrupt, match='不允许的调用'):
         claude_driver.wait_done('s', p, _cfg(), lambda m: None, threading.Event())
     assert '重试' in autopilot.hints_for(P.S_DO, '做题中出现不允许的调用')[0]
+
+
+def test_run_do_redoes_on_forbidden_call(fake_rounds):
+    """中途出现违规调用与接口报错一样作废重做，共用重做次数；超过次数上限才判失败停下。"""
+    from app import config
+    tid, calls, rounds = fake_rounds
+    bad = claude_driver.ForbiddenInterrupt('做题中出现不允许的调用，轨迹不能提交：轨迹中调用非内置 skill 1 次：x')
+    config.save({'do_api_error_redo_max': 3, 'do_api_error_wait_sec': 7})
+    rounds([bad, None])
+    claude_driver.run_do(tid, lambda m: None, threading.Event())
+    assert calls == ['do', 'sleep7', 'do'] and db.get_task(tid)['status'] == P.S_COLLECT
+    db.update_task(tid, status=P.S_DO)
+    calls.clear()
+    config.save({'do_api_error_redo_max': 1})
+    rounds([bad, bad])
+    with pytest.raises(claude_driver.DriverError, match='不允许的调用.*已自动作废重做 1 次') as ei:
+        claude_driver.run_do(tid, lambda m: None, threading.Event())
+    assert calls == ['do', 'sleep7', 'do']
+    assert '重试' in autopilot.hints_for(P.S_DO, str(ei.value))[0]
 
 
 def test_pick_option():

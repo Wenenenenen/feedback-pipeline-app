@@ -44,6 +44,14 @@ class StallInterrupt(DriverError):
     """做题会话卡住：轨迹累计静止超过上限（多为接入服务慢、反复重试），由 run_do 按配置作废重做。"""
 
 
+class ForbiddenInterrupt(DriverError):
+    """做题中途出现违规调用（子代理、MCP、非内置 skill）：这次会话的轨迹不能提交，由 run_do 按配置作废重做。
+
+    常见情形是模型照着 Claude Code 自带工具说明去调用干净环境里不存在的 skill（如 artifact-capabilities），
+    属于模型一次性的行为，作废会话重做即可，不必停下等人工点重试。
+    """
+
+
 # 轨迹单次静止达到这么久（秒）才计入卡住时长；正常思考、跑命令的停顿多在几分钟内，不计入
 STALL_GAP_SEC = 300
 
@@ -232,8 +240,8 @@ def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
     """轮询轨迹与屏幕，直到这一轮正常结束。
 
     接口报错中断时抛 ApiErrorInterrupt，轨迹累计静止超过 do_stall_max_min 时抛 StallInterrupt，
+    中途出现违规调用（子代理、MCP、非内置 skill）时立即抛 ForbiddenInterrupt，不再空等到做完，
     都由 run_do 决定是否作废重做；
-    中途出现违规调用（子代理、MCP、非内置 skill）立即判失败，不再空等到做完；
     模型提问、超时都抛错。
     """
     deadline = time.time() + int(cfg['do_timeout_min']) * 60
@@ -251,7 +259,7 @@ def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
             last_check = time.time()
             bad = trajectory.forbidden_calls(trajectory.parse(path), cfg['builtin_skills'])
             if bad:
-                raise DriverError('做题中出现不允许的调用，轨迹不能提交：' + '；'.join(bad))
+                raise ForbiddenInterrupt('做题中出现不允许的调用，轨迹不能提交：' + '；'.join(bad))
         state = trajectory.turn_state(path)
         if state == 'api_error':
             raise ApiErrorInterrupt(f"Claude Code 接口报错中断：{_last_error_text(path) or '见做题会话'}")
@@ -286,7 +294,8 @@ def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
 
 
 def run_do(task_id: int, log, stop):
-    """自动做题：做一轮，接口报错中断或卡住时按配置等待后作废会话重做（两种情况共用重做次数），做完进入待收集。"""
+    """自动做题：做一轮，接口报错中断、卡住或中途出现违规调用时按配置等待后作废会话重做（几种情况共用重做次数），
+    做完进入待收集。"""
     cfg = config.load()
     redo_max = int(cfg.get('do_api_error_redo_max') or 0)
     wait_sec = int(cfg.get('do_api_error_wait_sec') or 0)
@@ -295,7 +304,7 @@ def run_do(task_id: int, log, stop):
         try:
             _do_once(task_id, cfg, log, stop)
             break
-        except (ApiErrorInterrupt, StallInterrupt) as e:
+        except (ApiErrorInterrupt, StallInterrupt, ForbiddenInterrupt) as e:
             if redone >= redo_max:
                 raise DriverError(f'{e}（已自动作废重做 {redone} 次）' if redone else str(e)) from e
             redone += 1
