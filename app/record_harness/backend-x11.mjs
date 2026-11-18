@@ -202,6 +202,8 @@ export async function createBackend(args, emit) {
   b.beforeUpload = async () => new Set(await visibleWindows());
   // GTK 文件框的位置栏只能输入一个路径，多选时由执行器接管选择框直接设置文件（画面上看得到点击与导入结果）
   b.multiUploadVia = 'filechooser';
+  // 文件框打开时所在的目录：浏览器配置里的上次目录是录屏目录，每选一次文件就变成那个文件所在的目录
+  let lastDir = args.cwd;
   b.chooseFile = async (before, abs, human) => {
     let dlg = null;
     for (let i = 0; i < 60 && !dlg; i++) {
@@ -223,8 +225,12 @@ export async function createBackend(args, emit) {
     // 指针移进对话框里，像在看文件列表
     await human.moveTo(dx + DIALOG_W * rand(0.4, 0.6), dy + DIALOG_H * rand(0.35, 0.55));
     await sleep(rand(250, 500));
-    // 对话框打开时在录屏目录（浏览器配置里的上次目录），录屏目录下的文件只打相对路径
-    const rel = abs.startsWith(args.cwd + '/') ? abs.slice(args.cwd.length + 1) : abs;
+    // 对话框打开在浏览器记住的上次目录：第一次是录屏目录，选过文件后是那次文件所在的目录（如 .qa/cases）。
+    // 文件就在这个目录里时只打文件名，在录屏目录下时打相对路径，其余打完整路径，避免相对路径拼错
+    const dir = path.posix.dirname(abs);
+    const rel = dir === lastDir ? path.posix.basename(abs)
+      : abs.startsWith(lastDir + '/') ? abs.slice(lastDir.length + 1) : abs;
+    lastDir = dir;
     await xdo('key', 'ctrl+l');
     await sleep(rand(200, 400));
     await human.type(rel, 55);

@@ -132,3 +132,13 @@ def test_drag_and_hold():
     s = SKILL.read_text(encoding='utf-8')
     assert 'ctx.drag(' in s and 'ctx.hold(' in s and 'ctx.keyDown(' in s
     assert '不要在脚本里直接调 `xdotool`' in s and '不是人工录屏的理由' in s and '自动重复' in s
+
+
+def test_x11_file_dialog_path_follows_last_dir():
+    """虚拟屏的 GTK 文件框会打开在上次选文件的目录：同目录只打文件名，录屏目录下打相对路径，其余打完整路径。"""
+    x11 = (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
+    assert 'let lastDir = args.cwd;' in x11
+    assert 'dir === lastDir ? path.posix.basename(abs)' in x11
+    assert 'abs.startsWith(lastDir + \'/\') ? abs.slice(lastDir.length + 1) : abs' in x11
+    i, j = x11.index('const rel = dir === lastDir'), x11.index('lastDir = dir;')
+    assert i < j
