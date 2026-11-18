@@ -632,6 +632,11 @@ def test_record_issues(client):
     assert any(r.startswith('第1步') and 'wsl.exe' in r for r in rules)
     assert any(r.startswith('第1步') and '路径' in r for r in rules)
     assert any(r.startswith('第2步') and '像素' in r for r in rules)
+    # 地图网格上按坐标点格子是可见的格子，不算精确像素；坐标后面不是格子的仍拦下
+    for ok_text in ('点击坐标(1,4)的格子 查看积分值', '点击坐标（12，40）处的方格', '点坐标 3,7 的单元格'):
+        assert pipeline.record_issues([{'action': ok_text, 'command': '', 'expect': ''}]) == [], ok_text
+    for bad_text in ('在画布上点击坐标 120,80 处', '点击坐标(12,40)查看', '点像素(12,30)查看重心权重'):
+        assert pipeline.record_issues([{'action': bad_text, 'command': '', 'expect': ''}]), bad_text
     good = [
         {'action': '浏览器打开页面 在场景下拉框选 gradient.json', 'command': 'http://localhost:20400',
          'expect': '画面出现渐变 右侧面板红分量 0.6635'},
