@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { clamp, gauss, GOTO_RETRY_SEC, humanPath, isLongText, isRetryableGoto, rand, revealShift, sleep, typingDelays } from './human.mjs';
+import { clamp, gauss, GOTO_RETRY_SEC, humanPath, isLongText, isRetryableGoto, mimeOf, rand, revealShift, sleep, typingDelays } from './human.mjs';
 import { tailPad } from './muxutil.mjs';
 
 const require = createRequire(import.meta.url);
@@ -132,6 +132,23 @@ async function main() {
   page.on('pageerror', e => emit('pageerror', { text: String(e.message || e).slice(0, 300) }));
   // 本机桌面的 Chrome 经 WSL 的 localhost 转发访问录屏前准备启动的服务：同一端口刚关掉又重开（试跑收尾后重新准备）时，
   // 转发偶尔要过几秒才恢复，期间连接被拒。脚本里的 page.goto 遇到这类连接错误时等一会再试，最多等 GOTO_RETRY_SEC 秒
+  // 本机桌面的 Playwright 跑在 Windows 上：脚本里 setInputFiles 给的 WSL 路径会被当成 C:\home\... 而找不到。
+  // 后端提供 toLocalPath 时，把以 / 开头的路径读成文件内容再传入（读 WSL 共享用 readFileSync，copyFile 会报 EPERM）
+  if (b.toLocalPath) {
+    const mapFiles = files => {
+      const one = f => (typeof f === 'string' && f.startsWith('/')
+        ? { name: path.posix.basename(f), mimeType: mimeOf(f), buffer: fs.readFileSync(b.toLocalPath(f)) } : f);
+      return Array.isArray(files) ? files.map(one) : one(files);
+    };
+    const rawPageSet = page.setInputFiles.bind(page);
+    page.setInputFiles = (sel, files, opts) => rawPageSet(sel, mapFiles(files), opts);
+    const proto = Object.getPrototypeOf(page.locator('body'));
+    if (!proto.__fbMapped) {
+      const rawLocSet = proto.setInputFiles;
+      proto.setInputFiles = function (files, opts) { return rawLocSet.call(this, mapFiles(files), opts); };
+      proto.__fbMapped = true;
+    }
+  }
   const rawGoto = page.goto.bind(page);
   page.goto = async (url, opts) => {
     const end = Date.now() + GOTO_RETRY_SEC * 1000;

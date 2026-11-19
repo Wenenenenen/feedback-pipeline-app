@@ -111,3 +111,12 @@ export function revealShift(points, view, margin = 24) {
 export const GOTO_RETRY_SEC = 20;
 export const isRetryableGoto = e => /net::ERR_(CONNECTION_REFUSED|CONNECTION_RESET|CONNECTION_CLOSED|EMPTY_RESPONSE|ADDRESS_UNREACHABLE)/
   .test(String((e && e.message) || e));
+
+// 按扩展名给出文件类型（setInputFiles 以文件内容传入时要带上，页面读到的 file.type 与人选文件时一致）
+const MIME = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp',
+  svg: 'image/svg+xml', json: 'application/json', txt: 'text/plain', csv: 'text/csv', html: 'text/html',
+  xml: 'text/xml', js: 'text/javascript', wav: 'audio/wav', mp3: 'audio/mpeg', ogg: 'audio/ogg', flac: 'audio/flac',
+  mp4: 'video/mp4', webm: 'video/webm', zip: 'application/zip', pdf: 'application/pdf',
+};
+export const mimeOf = name => MIME[String(name).split('.').pop().toLowerCase()] || 'application/octet-stream';

@@ -286,6 +286,8 @@ export async function createBackend(args, emit) {
     return m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`
       : `\\\\wsl.localhost\\${args.distro}${abs.replace(/\//g, '\\')}`;
   };
+  // 脚本里写的 WSL 路径（如 prepare 里 setInputFiles 用的 `${ctx.cwd}/...`）在 Windows 侧读取时用的路径
+  b.toLocalPath = winSource;
   // 把文件放进暂存目录（已经在里面的，如刚下载的文件，原样不动），返回暂存目录里的 Windows 路径
   const stage = abs => {
     const name = path.posix.basename(abs);

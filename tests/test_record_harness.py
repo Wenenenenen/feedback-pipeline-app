@@ -252,3 +252,26 @@ def test_goto_retries_connection_refused():
     imp = next(line for line in h.splitlines() if line.startswith('import {') and "'./human.mjs'" in line)
     assert 'GOTO_RETRY_SEC' in imp and 'isRetryableGoto' in imp and 'revealShift' in imp
     assert h.index('page.goto = async (url, opts)') < h.index('const ctx = {')
+
+
+def test_set_input_files_maps_wsl_paths_on_desktop():
+    """本机桌面的 Playwright 在 Windows 上：prepare 里 setInputFiles 的 WSL 路径要换成 Windows 侧读到的文件内容。"""
+    node = _node()
+    if not node:
+        pytest.skip('没有 node')
+    url = (HARNESS / 'human.mjs').as_uri()
+    js = (f"import {{ mimeOf }} from '{url}';"
+          "console.log(JSON.stringify([mimeOf('/a/.qa/large-rgb.png'), mimeOf('k.JSON'), mimeOf('x.raw')]))")
+    r = subprocess.run([node, '--input-type=module', '-e', js], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == ['image/png', 'application/json', 'application/octet-stream']
+    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    win = (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
+    assert 'b.toLocalPath = winSource;' in win
+    # 页面与定位器的 setInputFiles 都要包装，且在脚本拿到 page 之前
+    i = h.index('if (b.toLocalPath) {')
+    assert i < h.index('const ctx = {')
+    assert 'page.setInputFiles = (sel, files, opts) => rawPageSet(sel, mapFiles(files), opts);' in h
+    assert 'proto.setInputFiles = function (files, opts)' in h
+    imp = next(line for line in h.splitlines() if line.startswith('import {') and "'./human.mjs'" in line)
+    assert 'mimeOf' in imp
