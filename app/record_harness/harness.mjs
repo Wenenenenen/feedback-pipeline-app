@@ -508,8 +508,8 @@ async function main() {
       await sleep(rand(600, 1000));
       return d;
     },
-    // 用系统程序查看文件（不要在浏览器地址栏里打开）：本机桌面上与人一样打开资源管理器（下载的文件从下载气泡点
-    // 「在文件夹中显示」，其他文件 Win+E 后粘贴文件夹路径），找到文件双击用默认程序打开；file 是 ctx.download 的返回值或文件路径。
+    // 用系统程序查看文件（不要在浏览器地址栏里打开）：本机桌面上刚下载的文件直接点下载气泡里那一行，其他文件
+    // Win+E 打开资源管理器粘贴文件夹路径后双击，都用默认程序打开；file 是 ctx.download 的返回值或文件路径。
     // 看完调用 ctx.closeFile()，或下一个浏览器操作前自动关掉。试跑（虚拟屏）时在浏览器新标签页里打开
     async openFile(file, opts = {}) {
       const abs = file && typeof file === 'object' ? file.path : path.posix.resolve(args.cwd, String(file));

@@ -76,7 +76,9 @@ def test_download_and_open_file():
     assert "uiaDl(chromeWin, name)" in win and "emit('reveal-assist'" in win
     i, j = win.index('b.openFile = async'), win.index('b.viewerOpen =')
     opener = win[i:j]
-    assert opener.index('revealFromBubble(') < opener.index('browseToFolder(') < opener.index('/select,')
+    # 刚下载的文件先直接点下载气泡里那一行打开（点完没打开由执行器补开），打不开再走资源管理器
+    assert "emit('open-assist'" in opener
+    assert opener.index('openFromBubble(') < opener.index('revealFromBubble(') < opener.index('browseToFolder(') < opener.index('/select,')
     ps = (HARNESS / 'uia_find.ps1').read_text(encoding='utf-8-sig')
     assert "$Kind -eq 'dl'" in ps and 'DownloadBubbleTransparentButton' in ps and '在文件夹中显示 $Name' in ps
     # 经典右键菜单在 UI 自动化里读不到菜单项，改用 Win32 菜单接口；去掉助记符后完全相等才算匹配

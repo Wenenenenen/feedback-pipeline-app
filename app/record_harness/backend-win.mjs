@@ -426,23 +426,37 @@ export async function createBackend(args, emit) {
   // 默认编辑器已经开着时文件会作为标签页开在原窗口里，按标题里的文件名认出这个窗口。
   // 某一步找不到控件时直接用默认程序（或记事本）打开。opened 记下要关的窗口，reused 表示是原来就开着的窗口
   let opened = [];
-  // 下载气泡里的「在文件夹中显示」：气泡还开着就直接在里面找这一行，关了先点工具栏的下载按钮打开；
-  // 指针移到这一行的文件名上，悬停后行右侧才出现文件夹图标，再点它。返回打开的资源管理器窗口，不成返回 null
-  async function revealFromBubble(name, human, before) {
+  // 下载气泡里这个文件的一行：气泡还开着就直接在里面找，关了先点工具栏的下载按钮打开；指针移到这一行的文件名上。
+  // 返回气泡状态（uiaDl 的结果），没有这一行返回 null
+  async function bubbleRow(name, human) {
     if (!chromeWin) return null;
     if (front !== 'browser') await b.raise('browser');
     let s = await uiaDl(chromeWin, name);
-    emit('reveal-bubble', { name, item: !!s.item, toolbar: !!s.toolbar });
+    emit('bubble', { name, item: !!s.item, toolbar: !!s.toolbar });
     if (!s.item && s.toolbar) {
       await goTo(human, rectCenter(s.toolbar));
       await sleep(rand(250, 450));
       await human.click();
       for (let i = 0; i < 10 && !s.item; i++) { await sleep(200); s = await uiaDl(chromeWin, name); }
     }
-    if (!s.item) { emit('reveal-bubble', { name, step: 'no-item' }); return null; }
+    if (!s.item) { emit('bubble', { name, step: 'no-item' }); return null; }
     const [l, t, r, bm] = s.item;
     await goTo(human, { x: l + (r - l) * rand(0.3, 0.5), y: t + (bm - t) * rand(0.35, 0.65) });
     await sleep(rand(400, 700));
+    return s;
+  }
+  // 与人一样直接点下载气泡里这个文件的一行，由 Chrome 用默认程序打开。点到了返回 true（是否真的打开由调用方核对）
+  async function openFromBubble(name, human) {
+    const s = await bubbleRow(name, human);
+    if (!s) return false;
+    await human.click();
+    emit('open-from-bubble', { name });
+    return true;
+  }
+  // 下载气泡里的「在文件夹中显示」：悬停在这一行上时行右侧才出现文件夹图标，再点它。返回打开的资源管理器窗口，不成返回 null
+  async function revealFromBubble(name, human, before) {
+    let s = await bubbleRow(name, human);
+    if (!s) return null;
     for (let i = 0; i < 8 && !s.folder; i++) {
       s = await uiaDl(chromeWin, name);
       if (!s.folder) await sleep(150);
@@ -454,7 +468,7 @@ export async function createBackend(args, emit) {
     emit('reveal', { name, via: 'download-bubble' });
     let ex = await waitNewWindow(before, x => x.class === 'CabinetWClass', 1500);
     if (!ex) {
-      // 执行器经 WSL 启动，Chrome 带管理员权限，而资源管理器是普通权限：Chrome 的「在文件夹中显示」会静默失败。
+      // 录屏用的 Chrome 里「在文件夹中显示」点了没反应（与直接打开同因，原因未查明）：
       // 点击之后由执行器打开资源管理器定位到这个文件，画面上与点击后弹出一致
       emit('reveal-assist', { name });
       spawn('explorer.exe', [`/select,"${path.join(staging, name)}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
@@ -515,15 +529,8 @@ export async function createBackend(args, emit) {
     const name = path.basename(winPath);
     const kind = app === 'notepad' ? 'notepad' : 'default';
     const before = new Set((await windows()).map(w => w.hwnd));
-    // 与人一样打开资源管理器：刚下载的文件在下载气泡里点「在文件夹中显示」，其他文件按 Win+E 后在地址栏粘贴文件夹路径；
-    // 都不成时才直接启动资源管理器定位到文件
-    let ex = downloaded.has(winPath.toLowerCase()) ? await revealFromBubble(name, human, before) : null;
-    if (!ex) ex = await browseToFolder(path.dirname(winPath), name, before);
-    if (!ex) {
-      emit('reveal-fallback', { name });
-      spawn('explorer.exe', [`/select,"${winPath}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
-      ex = await waitNewWindow(before, x => x.class === 'CabinetWClass', 10000);
-    }
+    const isDownload = downloaded.has(winPath.toLowerCase());
+    let ex = null;
     let viewer = null;
     const notViewer = x => x.hwnd === ex?.hwnd || x.class === 'CabinetWClass' || isExe(x, 'chrome.exe') || x.class === TERM_CLASS
       || (kind === 'notepad' && !isExe(x, 'notepad.exe'));
@@ -540,7 +547,30 @@ export async function createBackend(args, emit) {
       }
       return null;
     };
-    if (ex) {
+    // 刚下载的文件：与人一样直接点下载气泡里这一行，用默认程序打开。录屏用的 Chrome 里点这一行没反应
+    // （已排除管理员权限、DevTools 接管下载、从 WSL 启动三种原因）：点完 1.5 秒没打开就由执行器用默认程序打开这个文件，
+    // 画面上与点击后打开一致；还是没打开再走资源管理器
+    if (isDownload && kind === 'default' && await openFromBubble(name, human)) {
+      viewer = await findViewer(1500);
+      if (!viewer) {
+        emit('open-assist', { name });
+        spawn('explorer.exe', [`"${winPath}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+        viewer = await findViewer(15000);
+      }
+      if (!viewer) emit('open-from-bubble-failed', { name });
+    }
+    // 走资源管理器：刚下载的文件在下载气泡里点「在文件夹中显示」，其他文件按 Win+E 后在地址栏粘贴文件夹路径；
+    // 都不成时才直接启动资源管理器定位到文件
+    if (!viewer) {
+      ex = isDownload ? await revealFromBubble(name, human, before) : null;
+      if (!ex) ex = await browseToFolder(path.dirname(winPath), name, before);
+      if (!ex) {
+        emit('reveal-fallback', { name });
+        spawn('explorer.exe', [`/select,"${winPath}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+        ex = await waitNewWindow(before, x => x.class === 'CabinetWClass', 10000);
+      }
+    }
+    if (!viewer && ex) {
       opened.push({ hwnd: ex.hwnd, reused: false });
       await helper.req('foreground', { hwnd: ex.hwnd, maximize: true });
       front = 'explorer';
