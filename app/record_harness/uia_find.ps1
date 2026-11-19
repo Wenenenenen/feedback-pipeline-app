@@ -44,16 +44,59 @@ function Index-Of($items, $text) {
 }
 
 if ($Kind -eq 'menu') {
-    # 右键菜单与子菜单是该进程新弹出的顶层窗口：逐个窗口找菜单项，最多等 3 秒
+    # 经典右键菜单（#32768 窗口）在 UI 自动化里是没有子元素的空面板，改用 Win32 菜单接口：
+    # 向菜单窗口发 MN_GETHMENU 取菜单句柄，逐项读文字（去掉 & 助记符）与屏幕矩形。按 Z 序先找最上层的菜单（子菜单）
+    Add-Type -Namespace FbUia -Name Menu -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr after, string cls, string title);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
+[DllImport("user32.dll")] public static extern int GetMenuItemCount(IntPtr m);
+[DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetMenuString(IntPtr m, uint id, System.Text.StringBuilder s, int max, uint flags);
+[DllImport("user32.dll")] public static extern bool GetMenuItemRect(IntPtr h, IntPtr m, uint i, out RECT r);
+[StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+'@
     $alts = $Name.Split('|') | Where-Object { $_ }
+    # 菜单文字去掉助记符与快捷键说明后再比较：「打开方式(&H)」→「打开方式」，「&Open with」→「Open with」；
+    # 要完全相等，避免「Open with」匹配到「Open with Sublime Text」
+    function Clean-Name([string]$s) {
+        $s = ($s -split "`t")[0]
+        $s = $s -replace '\(&.\)$', '' -replace '&', '' -replace '(\.\.\.|…)$', ''
+        return $s.Trim()
+    }
+    function Find-Win32Menu {
+        $w = [IntPtr]::Zero
+        while (($w = [FbUia.Menu]::FindWindowEx([IntPtr]::Zero, $w, '#32768', [NullString]::Value)) -ne [IntPtr]::Zero) {
+            if (-not [FbUia.Menu]::IsWindowVisible($w)) { continue }
+            $hm = [FbUia.Menu]::SendMessage($w, 0x01E1, [IntPtr]::Zero, [IntPtr]::Zero)
+            if ($hm -eq [IntPtr]::Zero) { continue }
+            $cnt = [FbUia.Menu]::GetMenuItemCount($hm)
+            for ($i = 0; $i -lt $cnt; $i++) {
+                $sb = New-Object System.Text.StringBuilder 256
+                [void][FbUia.Menu]::GetMenuString($hm, $i, $sb, 256, 0x400)
+                $n = Clean-Name $sb.ToString()
+                foreach ($a in $alts) {
+                    if ($n -and $n -eq $a) {
+                        $r = New-Object FbUia.Menu+RECT
+                        if ([FbUia.Menu]::GetMenuItemRect([IntPtr]::Zero, $hm, $i, [ref]$r) -and $r.Right -gt $r.Left) {
+                            return @{ found = $true; name = $n; rect = @($r.Left, $r.Top, $r.Right, $r.Bottom) }
+                        }
+                    }
+                }
+            }
+        }
+        return $null
+    }
+    # 新式右键菜单（Win11 默认）的菜单项在 UI 自动化里可见：在该进程的顶层窗口里找；两种都最多等 3 秒
     $mcond = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::MenuItem)
     $pcond = New-Object System.Windows.Automation.PropertyCondition($AE::ProcessIdProperty, $ProcId)
     for ($t = 0; $t -lt 15; $t++) {
+        $hit = Find-Win32Menu
+        if ($hit) { $hit | ConvertTo-Json -Compress; exit 0 }
         foreach ($w in $AE::RootElement.FindAll($Scope::Children, $pcond)) {
             foreach ($m in $w.FindAll($Scope::Descendants, $mcond)) {
-                $n = $m.Current.Name
+                $n = Clean-Name $m.Current.Name
                 foreach ($a in $alts) {
-                    if ($n -and $n.StartsWith($a) -and -not $m.Current.BoundingRectangle.IsEmpty) {
+                    if ($n -and $n -eq $a -and -not $m.Current.BoundingRectangle.IsEmpty) {
                         @{ found = $true; name = $n; rect = (Rect-Of $m) } | ConvertTo-Json -Compress
                         exit 0
                     }

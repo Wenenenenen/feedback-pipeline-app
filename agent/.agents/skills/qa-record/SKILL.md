@@ -54,7 +54,7 @@ export default async function run(ctx) {
 - `ctx.drag(起点, 终点, {button, ms, from})`：拖动，指针移到起点、按下、沿人手的轨迹移到终点、松开；起点、终点的写法同 `moveTo`（`from` 是起点的 `{dx, dy}`），终点可以是数组（依次经过多个点），也可以写 `{dx, dy}` 表示从当前位置按页面像素偏移，如 `ctx.drag('#view', { dx: 240, dy: 0 })` 在画布上横向拖动旋转视角；`button` 取 `left`、`right`、`middle`（默认 left），`ms` 是每段移动的时长；拖动画墙、框选、拖滑块、转视角都用它；
 - `ctx.upload(目标, 文件路径)`：点上传按钮（`<input type=file>` 或会打开它的按钮、label），在弹出的系统文件选择框里选中文件；文件路径写录屏目录下的 WSL 路径，正式录制时流水线会先把它放进「下载」下以分支命名的文件夹，对话框打开在那里，指针直接移到文件上双击；页面要求一次多选一组文件（输入框带 `multiple`）时第二个参数传数组，如 `` [`${ctx.cwd}/.qa/g/a.png`, `${ctx.cwd}/.qa/g/manifest.json`] ``，正式录制时在文件列表里先点第一个、相邻的按住 Shift 点最后一个、不相邻的按住 Ctrl 逐个点，再回车，试跑（虚拟屏）时直接设置文件；同一次多选的文件名不能重复，多选不是人工录屏的理由。要选的文件必须是输入框 `accept` 允许的类型（对话框会按类型筛掉别的文件，列表里看不到就只能手打文件名，一看就假）；
 - `ctx.download(目标)`：点下载按钮并等下载完成，返回 `{name, path}`；正式录制时 Chrome 按原文件名存进「下载」下以分支命名的文件夹，下载气泡显示文件名与格式图标。`path` 可以直接传给 `ctx.upload` 把下载的文件导回去，或传给 `ctx.openFile` 查看。下载一律用它，不要用 `page.waitForEvent('download')` 和 `download.saveAs`（正式录制时下载不经 Playwright，拿不到文件）；
-- `ctx.openFile(文件, {pause})`：用系统程序查看下载的图片或文本：正式录制时在资源管理器里定位到文件，图片双击用系统看图打开，json、txt、csv 等文本右键「打开方式 → 记事本」打开，停留 `pause`（默认 2500）毫秒；文件写 `ctx.download` 的返回值或文件路径。看完调用 `ctx.closeFile()`（按 Alt+F4 关掉），下一个浏览器操作前也会自动关掉。要展示下载内容时一律用它，不要在浏览器地址栏里打开 `file://` 路径；试跑（虚拟屏）时在浏览器新标签页里打开，截图只用来核对流程；
+- `ctx.openFile(文件, {pause})`：用系统程序查看下载的图片或文本：正式录制时在资源管理器里定位到文件双击，用默认程序打开（图片是系统看图，json、txt、csv 等文本是本机默认编辑器），停留 `pause`（默认 2500）毫秒；文件写 `ctx.download` 的返回值或文件路径。看完调用 `ctx.closeFile()`（新开的窗口按 Alt+F4 关掉），下一个浏览器操作前也会自动关掉。要展示下载内容时一律用它，不要在浏览器地址栏里打开 `file://` 路径；试跑（虚拟屏）时在浏览器新标签页里打开，截图只用来核对流程；
 - `ctx.console(表达式, {pause 毫秒, close})`：按 Ctrl+Shift+J 打开开发者工具的控制台，逐字输入一行表达式后回车，返回值停留 `pause`（默认 2500）毫秒后按 F12 关掉（`close: false` 时不关）；只用于录屏步骤里只读地读取精确像素（如 `getImageData`），表达式写成一行、不改页面状态，其他数值一律从页面上读；
 - `ctx.reload()`：指针移到浏览器的刷新按钮点击，等页面加载完；`ctx.goto(网址)`：点地址栏、输入网址回车（超过 30 字的长网址粘贴，短网址逐字打），等页面加载完；都可以加 `{waitUntil: 'networkidle'}`；只用来打开产物页面，不用来查看下载的文件；
 - `ctx.scroll(格数)`：在浏览器里滚动鼠标滚轮，正数向下；
@@ -88,7 +88,7 @@ await ctx.upload('text=导入文件', `${ctx.cwd}/.qa/broken.wav`);
 
 - `run` 部分在时长上限减 5 秒内结束，按录屏步骤的顺序逐步执行，每步开头调用 `ctx.step`；每个现象出现后 `ctx.sleep(1500)` 到 `3000` 让画面停留，整体节奏不要太快也不要拖。
 - 只录 Feedback 里写到的内容，失败项照录；不在录屏里跑临时脚本、注入控制台脚本或改页面状态，证据放在页面上的正常操作里。录屏步骤本身要求使用控制台脚本定位精确像素时，用 `ctx.console` 在画面上执行（不要用 `ctx.page.evaluate`，那样画面上看不到返回值）。
-- 下载与查看下载内容：用 `ctx.download` 下载，要让画面看到下载的图片或 JSON 时用 `ctx.openFile` 在系统看图、记事本里打开；不要在浏览器里打开 `file://` 地址，也不要为了展示文件内容跑终端命令。
+- 下载与查看下载内容：用 `ctx.download` 下载，要让画面看到下载的图片或 JSON 时用 `ctx.openFile` 在系统看图、默认编辑器里打开；不要在浏览器里打开 `file://` 地址，也不要为了展示文件内容跑终端命令。
 - `run` 里不用 `page.reload`、`page.goto`、`locator.click`、`locator.fill`、`selectOption`、`setInputFiles`、`page.keyboard`、`page.mouse`、`page.waitForEvent('download')` 做动作（画面上看不到对应的操作，一看就是脚本），分别换成 `ctx.reload`、`ctx.goto`、`ctx.click`、`ctx.type`、`ctx.select`、`ctx.upload`、`ctx.key`、`ctx.hold`、`ctx.drag`；也不要在脚本里直接调 `xdotool`（正式录制在本机桌面时没有 xdotool，会直接失败）；`prepare` 不录，可以随意用。
 - 不调用 `page.pause`、不等待人工输入，不打开新的浏览器，不改动录屏目录里的已提交文件；脚本里不写死试跑生成的临时数据。
 - 以下情况无法自动录屏，`manual_needed` 设为 true，`reason` 写清原因，`script` 给空字符串：

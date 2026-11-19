@@ -14,8 +14,11 @@ $dir = Join-Path $env:APPDATA 'io.github.clash-verge-rev.clash-verge-rev'
 $yaml = Get-Content (Join-Path $dir 'clash-verge.yaml') -Raw -Encoding UTF8
 $pipe = ([regex]::Match($yaml, 'external-controller-pipe:\s*(\S+)')).Groups[1].Value
 $secret = ([regex]::Match($yaml, '(?m)^secret:\s*(.*)$')).Groups[1].Value.Trim().Trim("'").Trim('"')
-if (-not $pipe) { throw '没有在 clash-verge.yaml 里找到 external-controller-pipe' }
 $pipeName = $pipe -replace '^\\\\\.\\pipe\\', ''
+# 服务模式下实际管道名是 verge-mihomo-production-…，与配置里的 sidecar 名不同：优先用当前存在的 verge-mihomo 管道
+$live = @(Get-ChildItem '\\.\pipe\' | Where-Object { $_.Name -like 'verge-mihomo-*' } | ForEach-Object Name)
+if ($live.Count -gt 0 -and $live -notcontains $pipeName) { $pipeName = $live[0] }
+if (-not $pipeName) { throw '没有找到 Clash Verge 的控制管道（verge-mihomo-*）' }
 
 # 经命名管道发一个 HTTP 请求，返回响应正文（JSON 时解析成对象）
 function Invoke-Mihomo([string]$Method, [string]$Path, [string]$Body = '') {
@@ -32,20 +35,31 @@ function Invoke-Mihomo([string]$Method, [string]$Path, [string]$Body = '') {
     $buf = New-Object byte[] 65536
     while (($n = $c.Read($buf, 0, $buf.Length)) -gt 0) { $ms.Write($buf, 0, $n) }
     $c.Close()
-    $text = [Text.Encoding]::UTF8.GetString($ms.ToArray())
-    $status = [int]([regex]::Match($text, '^HTTP/\S+\s+(\d+)')).Groups[1].Value
-    $body = $text.Substring($text.IndexOf("`r`n`r`n") + 4)
-    # 分块传输时去掉块长度行
-    if ($text -match '(?im)^transfer-encoding:\s*chunked') {
-        $out = New-Object Text.StringBuilder
-        $rest = $body
-        while ($rest) {
-            $i = $rest.IndexOf("`r`n"); if ($i -lt 0) { break }
-            $len = [Convert]::ToInt32($rest.Substring(0, $i).Trim(), 16); if ($len -eq 0) { break }
-            [void]$out.Append($rest.Substring($i + 2, $len)); $rest = $rest.Substring($i + 2 + $len + 2)
-        }
-        $body = $out.ToString()
+    $raw = $ms.ToArray()
+    # 头部是 ASCII，按字节找到空行；正文按字节处理（节点名含中文，分块长度是字节数）
+    $hdrEnd = -1
+    for ($k = 0; $k -le $raw.Length - 4; $k++) {
+        if ($raw[$k] -eq 13 -and $raw[$k + 1] -eq 10 -and $raw[$k + 2] -eq 13 -and $raw[$k + 3] -eq 10) { $hdrEnd = $k; break }
     }
+    if ($hdrEnd -lt 0) { throw '控制接口返回的不是 HTTP 响应' }
+    $head = [Text.Encoding]::ASCII.GetString($raw, 0, $hdrEnd)
+    $status = [int]([regex]::Match($head, '^HTTP/\S+\s+(\d+)')).Groups[1].Value
+    $pos = $hdrEnd + 4
+    $out = New-Object System.IO.MemoryStream
+    if ($head -match '(?im)^transfer-encoding:\s*chunked') {
+        # 分块传输：逐块读出「十六进制长度行 + 数据 + CRLF」
+        while ($pos -lt $raw.Length) {
+            $e = $pos; while ($e -lt $raw.Length - 1 -and -not ($raw[$e] -eq 13 -and $raw[$e + 1] -eq 10)) { $e++ }
+            $lenText = ([Text.Encoding]::ASCII.GetString($raw, $pos, $e - $pos) -split ';')[0].Trim()
+            if (-not $lenText) { break }
+            $len = [Convert]::ToInt32($lenText, 16); if ($len -eq 0) { break }
+            $out.Write($raw, $e + 2, [Math]::Min($len, $raw.Length - $e - 2))
+            $pos = $e + 2 + $len + 2
+        }
+    } else {
+        $out.Write($raw, $pos, $raw.Length - $pos)
+    }
+    $body = [Text.Encoding]::UTF8.GetString($out.ToArray())
     $obj = $null
     try { $obj = $body | ConvertFrom-Json } catch { }
     return @{ status = $status; body = $obj; text = $body }
@@ -70,6 +84,8 @@ Write-Output "代理组 $gname 当前节点 $now"
 $ok = $true
 foreach ($u in $Targets) {
     $d = Get-Delay $now $u
+    # 单次测速偶发超时，当前节点不通时再测一次，避免误切
+    if (-not $d) { $d = Get-Delay $now $u }
     Write-Output ("  {0} {1}" -f $u, $(if ($d) { "$d ms" } else { '不通' }))
     if (-not $d) { $ok = $false }
 }

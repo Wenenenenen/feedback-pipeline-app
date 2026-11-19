@@ -59,6 +59,14 @@ def test_download_and_open_file():
     win = (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
     assert "behavior: 'allow', downloadPath: staging" in win and 'await ownDownloads();' in win
     assert "['打开方式', 'Open with']" in win and "['记事本', 'Notepad']" in win and '/select,' in win
+    # 文本与图片都双击用默认程序打开；原来就开着的编辑器窗口（新开标签页）不按 Alt+F4 整个关掉
+    assert "kind === 'default'" in win and "w.reused ? 'ctrl+w' : 'alt+f4'" in win
+    assert "if (w.reused && !String(now.title || '').includes(w.name)) continue;" in win
+    # 暂存目录里已有相同内容的文件不重写，免得打乱对话框里按日期排的顺序
+    assert 'fs.readFileSync(dst).equals(data)' in win
+    ps = (HARNESS / 'uia_find.ps1').read_text(encoding='utf-8-sig')
+    # 经典右键菜单在 UI 自动化里读不到菜单项，改用 Win32 菜单接口；去掉助记符后完全相等才算匹配
+    assert '0x01E1' in ps and 'GetMenuItemRect' in ps and '$n -eq $a' in ps and 'StartsWith' not in ps
     x11 = (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
     assert 'b.download = async' in x11 and 'b.openFile = async' in x11 and 'b.closeFile = async' in x11
     assert "behavior: 'allow', downloadPath: dlDir" in x11 and "page.waitForEvent('download'" not in x11

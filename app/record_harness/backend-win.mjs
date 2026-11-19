@@ -95,8 +95,6 @@ const rectCenter = ([l, t, r, b]) => ({ x: l + (r - l) * rand(0.35, 0.6), y: t +
 // 指针移到某个点（{x, y}）
 const goTo = (human, p) => human.moveTo(p.x, p.y);
 const isExe = (w, exe) => String(w.exe || '').toLowerCase() === exe;
-// 用系统看图打开的图片，其余（json、txt、csv、日志等）用记事本打开
-const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|webp|tiff?|ico)$/i;
 
 // 合并写入 Chrome 配置：关掉翻译，文件对话框默认打开暂存目录，上次正常退出（不弹恢复提示）
 function patchProfile(profile, staging) {
@@ -282,7 +280,13 @@ export async function createBackend(args, emit) {
     const dst = path.join(staging, name);
     const src = winSource(abs);
     // copyFile 读 WSL 共享会报 EPERM，改为读出再写入
-    if (path.resolve(src).toLowerCase() !== path.resolve(dst).toLowerCase()) fs.writeFileSync(dst, fs.readFileSync(src));
+    // 暂存目录里已有内容相同的文件时不重写：重写会刷新修改时间，打乱对话框里按日期排的顺序
+    if (path.resolve(src).toLowerCase() !== path.resolve(dst).toLowerCase()) {
+      const data = fs.readFileSync(src);
+      let same = false;
+      try { same = fs.readFileSync(dst).equals(data); } catch { /* 还没有这个文件 */ }
+      if (!same) fs.writeFileSync(dst, data);
+    }
     staged.add(dst);
     return dst;
   };
@@ -402,22 +406,36 @@ export async function createBackend(args, emit) {
     return { name, winPath, path: toWsl(winPath) };
   };
 
-  // 用系统程序打开文件（看下载的图片、文本）：资源管理器里定位到文件，图片双击用系统看图打开，
-  // 文本右键「打开方式 → 记事本」（本机 json、txt 默认程序可能是别的编辑器，不能双击）。
-  // 某一步找不到控件时直接用对应程序打开。返回打开的程序窗口
+  // 用系统程序打开文件（看下载的图片、文本）：资源管理器里定位到文件双击，用默认程序打开（图片是系统看图，
+  // 文本是本机的默认编辑器）；app 为 'notepad' 时改为右键「打开方式 → 记事本」。
+  // 默认编辑器已经开着时文件会作为标签页开在原窗口里，按标题里的文件名认出这个窗口。
+  // 某一步找不到控件时直接用默认程序（或记事本）打开。opened 记下要关的窗口，reused 表示是原来就开着的窗口
   let opened = [];
   b.openFile = async (abs, human, { app } = {}) => {
     const winPath = stage(abs);
     const name = path.basename(winPath);
-    const kind = app || (IMAGE_EXT.test(name) ? 'photos' : 'notepad');
+    const kind = app === 'notepad' ? 'notepad' : 'default';
     const before = new Set((await windows()).map(w => w.hwnd));
     spawn('explorer.exe', [`/select,"${winPath}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
     const ex = await waitNewWindow(before, x => x.class === 'CabinetWClass', 10000);
     let viewer = null;
-    const isViewer = x => !before.has(x.hwnd) && x.hwnd !== ex?.hwnd && x.class !== 'CabinetWClass'
-      && !isExe(x, 'chrome.exe') && x.class !== TERM_CLASS && (kind !== 'notepad' || isExe(x, 'notepad.exe'));
+    const notViewer = x => x.hwnd === ex?.hwnd || x.class === 'CabinetWClass' || isExe(x, 'chrome.exe') || x.class === TERM_CLASS
+      || (kind === 'notepad' && !isExe(x, 'notepad.exe'));
+    // 新出现的程序窗口，或原来就开着、标题里出现了这个文件名的窗口（编辑器新开了标签页）
+    const findViewer = async (timeoutMs) => {
+      const end = Date.now() + timeoutMs;
+      while (Date.now() < end) {
+        const ws = (await windows()).filter(x => !notViewer(x));
+        const fresh = ws.find(x => !before.has(x.hwnd));
+        if (fresh) return { ...fresh, reused: false };
+        const tab = ws.find(x => before.has(x.hwnd) && String(x.title || '').includes(name));
+        if (tab) return { ...tab, reused: true };
+        await sleep(200);
+      }
+      return null;
+    };
     if (ex) {
-      opened.push(ex.hwnd);
+      opened.push({ hwnd: ex.hwnd, reused: false });
       await helper.req('foreground', { hwnd: ex.hwnd, maximize: true });
       front = 'explorer';
       await sleep(rand(600, 900));
@@ -425,9 +443,9 @@ export async function createBackend(args, emit) {
       if (pos) {
         await goTo(human, cellPoint(pos.cell));
         await sleep(rand(300, 600));
-        if (kind === 'photos') {
+        if (kind === 'default') {
           await human.click('left', 2);
-          viewer = await waitNewWindow(before, isViewer, 15000);
+          viewer = await findViewer(15000);
         } else {
           await human.click('right');
           const item = await uiaMenu(ex.pid, ['打开方式', 'Open with']);
@@ -440,7 +458,7 @@ export async function createBackend(args, emit) {
               await goTo(human, rectCenter(np));
               await sleep(rand(250, 500));
               await human.click();
-              viewer = await waitNewWindow(before, isViewer, 15000);
+              viewer = await findViewer(15000);
             }
           }
           if (!viewer) { await helper.req('key', { combo: 'Escape' }); await helper.req('key', { combo: 'Escape' }); }
@@ -449,30 +467,31 @@ export async function createBackend(args, emit) {
     }
     if (!viewer) {
       emit('open-file-fallback', { name, kind });
-      if (kind === 'photos') spawn('explorer.exe', [`"${winPath}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+      if (kind === 'default') spawn('explorer.exe', [`"${winPath}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
       else spawn('notepad.exe', [winPath], { detached: true, stdio: 'ignore' }).unref();
-      viewer = await waitNewWindow(before, isViewer, 15000);
-      // 记事本已经开着时新文件会作为标签页开在原窗口里，没有新窗口
-      if (!viewer && kind === 'notepad') viewer = (await windows()).find(x => isExe(x, 'notepad.exe')) || null;
+      viewer = await findViewer(15000);
       if (!viewer) throw new Error(`没能打开 ${name}`);
     }
-    opened.push(viewer.hwnd);
-    await helper.req('foreground', { hwnd: viewer.hwnd, maximize: true });
+    opened.push({ hwnd: viewer.hwnd, reused: viewer.reused, name });
+    await helper.req('foreground', { hwnd: viewer.hwnd, maximize: !viewer.reused });
     front = 'viewer';
-    emit('open-file', { name, kind, exe: viewer.exe });
+    emit('open-file', { name, kind, exe: viewer.exe, reused: viewer.reused });
     await sleep(rand(500, 800));
     return true;
   };
   b.viewerOpen = () => opened.length > 0;
-  // 关掉打开文件时出现的窗口（先关看图或记事本，再关资源管理器），与人一样按 Alt+F4
+  // 关掉打开文件时出现的窗口（先关看图或编辑器，再关资源管理器），与人一样按 Alt+F4。
+  // 原来就开着的编辑器窗口不能整个关掉：标题里还是这个文件（当前标签页是它）时按 Ctrl+W 只关这个标签页，否则不动
   b.closeFile = async () => {
-    for (const hwnd of opened.reverse()) {
-      if (!(await windows()).some(x => x.hwnd === hwnd)) continue;
-      await helper.req('foreground', { hwnd });
+    for (const w of opened.reverse()) {
+      const now = (await windows()).find(x => x.hwnd === w.hwnd);
+      if (!now) continue;
+      if (w.reused && !String(now.title || '').includes(w.name)) continue;
+      await helper.req('foreground', { hwnd: w.hwnd });
       await sleep(rand(250, 450));
-      await helper.req('key', { combo: 'alt+f4', hold: rand(0.05, 0.1) });
+      await helper.req('key', { combo: w.reused ? 'ctrl+w' : 'alt+f4', hold: rand(0.05, 0.1) });
       await sleep(rand(400, 700));
-      if ((await windows()).some(x => x.hwnd === hwnd)) await helper.req('close', { hwnd }).catch(() => {});
+      if (!w.reused && (await windows()).some(x => x.hwnd === w.hwnd)) await helper.req('close', { hwnd: w.hwnd }).catch(() => {});
     }
     opened = [];
     front = '';
