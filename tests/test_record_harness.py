@@ -228,3 +228,27 @@ def test_reveal_points_before_drag():
     i, j = h.index('const moved = await revealPoints(', d), h.index('await b.button(btn, true)', d)
     assert i < j
     assert "await ctx.moveTo(s, { ms, noReveal: true })" in h
+
+
+def test_goto_retries_connection_refused():
+    """录屏前准备的服务经 WSL 转发偶尔晚几秒才能连上：page.goto 遇到连接被拒等错误时重试，其他错误照常报出。"""
+    node = _node()
+    if not node:
+        pytest.skip('没有 node')
+    url = (HARNESS / 'human.mjs').as_uri()
+    js = (f"import {{ isRetryableGoto, GOTO_RETRY_SEC }} from '{url}';"
+          "console.log(JSON.stringify([GOTO_RETRY_SEC,"
+          "isRetryableGoto(new Error('page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:21500/')),"
+          "isRetryableGoto(new Error('page.goto: net::ERR_EMPTY_RESPONSE at http://localhost:1/')),"
+          "isRetryableGoto(new Error('page.goto: net::ERR_NAME_NOT_RESOLVED at http://x/')),"
+          "isRetryableGoto(new Error('page.goto: Timeout 30000ms exceeded.'))]))")
+    r = subprocess.run([node, '--input-type=module', '-e', js], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout) == [20, True, True, False, False]
+    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    # 包装在脚本拿到 page 之前完成
+    assert 'const rawGoto = page.goto.bind(page);' in h
+    # 用到的常量与判断要从 human.mjs 导入（语法检查发现不了漏导入）
+    imp = next(line for line in h.splitlines() if line.startswith('import {') and "'./human.mjs'" in line)
+    assert 'GOTO_RETRY_SEC' in imp and 'isRetryableGoto' in imp and 'revealShift' in imp
+    assert h.index('page.goto = async (url, opts)') < h.index('const ctx = {')

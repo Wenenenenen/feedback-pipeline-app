@@ -106,3 +106,8 @@ export function revealShift(points, view, margin = 24) {
   if (!points.length) return { dx: 0, dy: 0 };
   return { dx: axis(points.map(p => p.x), view.w), dy: axis(points.map(p => p.y), view.h) };
 }
+
+// 打开页面时可以重试的连接错误（服务刚启动、WSL 的 localhost 转发还没就绪），其余错误照常报出
+export const GOTO_RETRY_SEC = 20;
+export const isRetryableGoto = e => /net::ERR_(CONNECTION_REFUSED|CONNECTION_RESET|CONNECTION_CLOSED|EMPTY_RESPONSE|ADDRESS_UNREACHABLE)/
+  .test(String((e && e.message) || e));

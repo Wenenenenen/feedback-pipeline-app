@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { clamp, gauss, humanPath, isLongText, rand, revealShift, sleep, typingDelays } from './human.mjs';
+import { clamp, gauss, GOTO_RETRY_SEC, humanPath, isLongText, isRetryableGoto, rand, revealShift, sleep, typingDelays } from './human.mjs';
 import { tailPad } from './muxutil.mjs';
 
 const require = createRequire(import.meta.url);
@@ -130,6 +130,21 @@ async function main() {
   const { page, context, browser, mouse: m0 } = inited;
   page.on('console', m => { if (m.type() === 'error') emit('console', { text: m.text().slice(0, 300) }); });
   page.on('pageerror', e => emit('pageerror', { text: String(e.message || e).slice(0, 300) }));
+  // 本机桌面的 Chrome 经 WSL 的 localhost 转发访问录屏前准备启动的服务：同一端口刚关掉又重开（试跑收尾后重新准备）时，
+  // 转发偶尔要过几秒才恢复，期间连接被拒。脚本里的 page.goto 遇到这类连接错误时等一会再试，最多等 GOTO_RETRY_SEC 秒
+  const rawGoto = page.goto.bind(page);
+  page.goto = async (url, opts) => {
+    const end = Date.now() + GOTO_RETRY_SEC * 1000;
+    for (let n = 1; ; n++) {
+      try {
+        return await rawGoto(url, opts);
+      } catch (e) {
+        if (!isRetryableGoto(e) || Date.now() >= end) throw e;
+        emit('goto-retry', { n, url: String(url).slice(0, 200), error: String(e.message || e).split('\n')[0].slice(0, 160) });
+        await sleep(1000);
+      }
+    }
+  };
   let mouse = { ...m0 };
 
   const human = {
