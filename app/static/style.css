@@ -17,7 +17,8 @@
 body.log-open { --log-h: 38vh; }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+/* 用最小高度而不是固定高度：body 固定为一屏高时，吸顶的顶栏会随 body 一起滚出视口（页面滚到中间顶栏就消失） */
+html, body { min-height: 100%; }
 body {
   margin: 0; font: 14px/1.65 var(--font); color: var(--text);
   /* 浅色点阵底纹，营造控制台工作台的质感 */
@@ -83,8 +84,23 @@ main { padding: 18px 22px calc(18px + var(--log-h)); }
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow);
 }
 
-/* 题目页：左列表 右详情，两侧各自滚动 */
-#tab-tasks { display: grid; grid-template-columns: minmax(460px, 38%) minmax(0, 1fr); gap: 18px; align-items: start; }
+/* 题目页：左列表 右详情，两侧各自滚动；中间的分隔条拖动改列表宽度（--list-w），详情占剩下的宽度 */
+#tab-tasks {
+  display: grid; grid-template-columns: var(--list-w, minmax(460px, 38%)) 18px minmax(0, 1fr);
+  align-items: start;
+}
+.splitter {
+  position: sticky; top: calc(var(--header-h) + 18px); align-self: start;
+  height: calc(100vh - var(--header-h) - 36px - var(--log-h)); cursor: col-resize; touch-action: none;
+}
+/* 分隔条中间一道细线，悬停或拖动时加粗变色 */
+.splitter::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: 8px; width: 2px; border-radius: 1px;
+  background: transparent; transition: background .15s;
+}
+.splitter:hover::after, body.resizing .splitter::after { background: var(--primary); }
+/* 拖动时不选中文字，指针一直是左右箭头 */
+body.resizing { cursor: col-resize; user-select: none; }
 .list-pane, .detail-pane {
   position: sticky; top: calc(var(--header-h) + 18px);
   max-height: calc(100vh - var(--header-h) - 36px - var(--log-h)); overflow: auto;
@@ -325,7 +341,9 @@ details.fold[open] > summary { border-bottom: 1px solid var(--line); margin: 0; 
 
 /* ---------- 题目列表向左折叠：只留题目名与状态 ---------- */
 .list-toggle { font: 700 15px/1 var(--mono); padding: 5px 9px; }
-#tab-tasks.list-collapsed { grid-template-columns: 236px minmax(0, 1fr); }
+#tab-tasks.list-collapsed { grid-template-columns: 236px 18px minmax(0, 1fr); }
+/* 折叠时宽度固定，分隔条不能拖 */
+.list-collapsed .splitter { cursor: default; pointer-events: none; }
 /* 折叠后工具栏只留展开按钮、题数和提交表按钮 */
 .list-collapsed .toolbar > :not(.list-toggle):not(#task-count):not(#submission) { display: none; }
 .list-collapsed .toolbar { justify-content: space-between; }
@@ -396,7 +414,8 @@ details.sub-row[open] > .sub-row-head { border-bottom: 1px dashed var(--line); b
 
 /* 窄屏改为上下排列 */
 @media (max-width: 1100px) {
-  #tab-tasks { grid-template-columns: minmax(0, 1fr); }
+  #tab-tasks, #tab-tasks.list-collapsed { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .splitter { display: none; }
   .list-pane, .detail-pane { position: static; max-height: none; }
   .field { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .field > .lab { padding-top: 0; }

@@ -261,6 +261,53 @@ function setListCollapsed(on) {
 $('#list-toggle').onclick = () => setListCollapsed(!$('#tab-tasks').classList.contains('list-collapsed'));
 try { setListCollapsed(localStorage.getItem('list-collapsed') === '1'); } catch (e) { setListCollapsed(false); }
 
+// ---------- 列表宽度拖拽 ----------
+// 拖动列表与详情之间的分隔条改列表宽度，详情占剩下的宽度；宽度记在本地，双击恢复默认
+const LIST_MIN = 320, DETAIL_MIN = 420;
+function setListWidth(px) {
+  const box = $('#tab-tasks');
+  if (px == null) { box.style.removeProperty('--list-w'); return; }
+  const max = Math.max(LIST_MIN, box.clientWidth - 18 - DETAIL_MIN);
+  box.style.setProperty('--list-w', `${Math.round(Math.min(Math.max(px, LIST_MIN), max))}px`);
+}
+(() => {
+  const sp = $('#list-splitter');
+  let startX = 0, startW = 0;
+  sp.addEventListener('pointerdown', e => {
+    if ($('#tab-tasks').classList.contains('list-collapsed') || e.button !== 0) return;
+    startX = e.clientX;
+    startW = $('.list-pane').getBoundingClientRect().width;
+    sp.setPointerCapture(e.pointerId);
+    document.body.classList.add('resizing');
+    e.preventDefault();
+  });
+  sp.addEventListener('pointermove', e => {
+    if (sp.hasPointerCapture(e.pointerId)) setListWidth(startW + e.clientX - startX);
+  });
+  const end = e => {
+    if (!sp.hasPointerCapture(e.pointerId)) return;
+    sp.releasePointerCapture(e.pointerId);
+    document.body.classList.remove('resizing');
+    const w = $('#tab-tasks').style.getPropertyValue('--list-w');
+    try { if (w) localStorage.setItem('list-width', parseInt(w, 10)); } catch (err) { /* 本地存储不可用时忽略 */ }
+  };
+  sp.addEventListener('pointerup', end);
+  sp.addEventListener('pointercancel', end);
+  sp.addEventListener('dblclick', () => {
+    setListWidth(null);
+    try { localStorage.removeItem('list-width'); } catch (err) { /* 本地存储不可用时忽略 */ }
+  });
+  let saved = null;
+  try { saved = localStorage.getItem('list-width'); } catch (err) { /* 本地存储不可用时按默认宽度 */ }
+  if (saved) setListWidth(+saved);
+  // 窗口变窄时把记下的宽度压回范围内，保证详情不小于最小宽度
+  window.addEventListener('resize', () => {
+    let w = null;
+    try { w = localStorage.getItem('list-width'); } catch (err) { /* 忽略 */ }
+    if (w) setListWidth(+w);
+  });
+})();
+
 // ---------- 提交表 ----------
 // 粘贴到表格时，含换行、制表符或引号的单元格要用引号包起来
 // 「复制整行」与「复制表头」不带的列（甲方表格里没有或不需要粘贴的）
