@@ -64,9 +64,17 @@ def test_download_and_open_file():
     assert "if (w.reused && !String(now.title || '').includes(w.name)) continue;" in win
     # 暂存目录里已有相同内容的文件不重写，免得打乱对话框里按日期排的顺序
     assert 'fs.readFileSync(dst).equals(data)' in win
+    # 资源管理器不再凭空弹出：下载的文件从下载气泡点「在文件夹中显示」，其他文件 Win+E 后在地址栏粘贴文件夹路径
+    assert 'revealFromBubble(name, human, before)' in win and "combo: 'win+e'" in win
+    assert "uiaDl(chromeWin, name)" in win and "emit('reveal-assist'" in win
+    i, j = win.index('b.openFile = async'), win.index('b.viewerOpen =')
+    opener = win[i:j]
+    assert opener.index('revealFromBubble(') < opener.index('browseToFolder(') < opener.index('/select,')
     ps = (HARNESS / 'uia_find.ps1').read_text(encoding='utf-8-sig')
+    assert "$Kind -eq 'dl'" in ps and 'DownloadBubbleTransparentButton' in ps and '在文件夹中显示 $Name' in ps
     # 经典右键菜单在 UI 自动化里读不到菜单项，改用 Win32 菜单接口；去掉助记符后完全相等才算匹配
-    assert '0x01E1' in ps and 'GetMenuItemRect' in ps and '$n -eq $a' in ps and 'StartsWith' not in ps
+    menu = ps[ps.index("if ($Kind -eq 'menu')"):]
+    assert '0x01E1' in menu and 'GetMenuItemRect' in menu and '$n -eq $a' in menu and 'StartsWith' not in menu
     x11 = (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
     assert 'b.download = async' in x11 and 'b.openFile = async' in x11 and 'b.closeFile = async' in x11
     assert "behavior: 'allow', downloadPath: dlDir" in x11 and "page.waitForEvent('download'" not in x11

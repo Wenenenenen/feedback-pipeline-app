@@ -5,7 +5,9 @@
 #   powershell -NoProfile -File uia_find.ps1 -Hwnd <窗口句柄> -Names "a.png|b.json"
 #     一次找多个文件，输出 {"items": [{name, found, index, cell, row}]}，index 是在列表里的顺序（判断是否相邻、能否 Shift 连选）。
 #   powershell -NoProfile -File uia_find.ps1 -Kind menu -ProcId <进程号> -Name "打开方式|Open with"
-#     在该进程的顶层窗口（右键菜单、子菜单）里找名称以其中任一项开头的菜单项，输出 {found, rect}。
+#     在该进程的顶层窗口（右键菜单、子菜单）里找名称与其中任一项相同的菜单项，输出 {found, rect}。
+#   powershell -NoProfile -File uia_find.ps1 -Kind dl -Hwnd <Chrome 窗口句柄> -Name <下载的文件名>
+#     找 Chrome 下载气泡里这个文件的一行、它的「在文件夹中显示」按钮和工具栏的下载按钮，输出 {item, folder, toolbar}。
 # 资源管理器隐藏了已知扩展名时，按去掉扩展名的名称再找一次。
 param([long]$Hwnd = 0, [string]$Name = '', [string]$Names = '', [string]$Kind = 'list', [int]$ProcId = 0)
 $ErrorActionPreference = 'Stop'
@@ -41,6 +43,36 @@ function Index-Of($items, $text) {
     for ($i = 0; $i -lt $items.Count; $i++) { if ($items[$i].Current.Name -eq $text) { return $i } }
     for ($i = 0; $i -lt $items.Count; $i++) { if ($items[$i].Current.Name -eq $bare) { return $i } }
     return -1
+}
+
+if ($Kind -eq 'dl') {
+    # Chrome 下载气泡：-Hwnd 是 Chrome 主窗口，-Name 是下载的文件名。输出
+    #   item    气泡里这个文件那一行的矩形（气泡没打开或没有这一行时为空）
+    #   folder  这一行的「在文件夹中显示」按钮（指针悬停在这一行上时才出现）
+    #   toolbar 工具栏上的下载按钮（气泡关了时点它重新打开）
+    $root = $AE::FromHandle([IntPtr]$Hwnd)
+    $btn = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::Button)
+    $out = @{ item = $null; folder = $null; toolbar = $null }
+    $winCond = New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'RootView')
+    foreach ($bw in $root.FindAll($Scope::Descendants, $winCond)) {
+        $bn = $bw.Current.Name
+        if ($bn -notmatch '下载|[Dd]ownload') { continue }
+        foreach ($b in $bw.FindAll($Scope::Descendants, $btn)) {
+            $k = $b.Current
+            if ($k.BoundingRectangle.IsEmpty -or $k.IsOffscreen) { continue }
+            # 下载记录里可能有以前同名的下载：取最上面（最新）的一行；文件夹按钮只在悬停的那一行上出现
+            if ($k.ClassName -eq 'DownloadBubbleTransparentButton' -and $k.Name.StartsWith("$Name ")) { if (-not $out.item) { $out.item = Rect-Of $b } }
+            elseif (-not $out.folder -and ($k.Name -eq "在文件夹中显示 $Name" -or $k.Name -eq "Show in folder $Name")) { $out.folder = Rect-Of $b }
+        }
+    }
+    $tbCond = New-Object System.Windows.Automation.OrCondition(
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'PinnedActionToolbarButton')),
+        (New-Object System.Windows.Automation.PropertyCondition($AE::ClassNameProperty, 'DownloadToolbarButtonView')))
+    foreach ($b in $root.FindAll($Scope::Descendants, $tbCond)) {
+        if ($b.Current.Name -match '下载|[Dd]ownload' -and -not $b.Current.BoundingRectangle.IsEmpty) { $out.toolbar = Rect-Of $b; break }
+    }
+    $out | ConvertTo-Json -Compress
+    exit 0
 }
 
 if ($Kind -eq 'menu') {
