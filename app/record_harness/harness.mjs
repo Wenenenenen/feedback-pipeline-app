@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
-import { clamp, gauss, humanPath, isLongText, rand, sleep, typingDelays } from './human.mjs';
+import { clamp, gauss, humanPath, isLongText, rand, revealShift, sleep, typingDelays } from './human.mjs';
 import { tailPad } from './muxutil.mjs';
 
 const require = createRequire(import.meta.url);
@@ -201,6 +201,23 @@ async function main() {
   };
   const target = t => (typeof t === 'string' ? page.locator(t).first() : t);
   const isPoint = t => t && typeof t === 'object' && typeof t.x === 'number' && typeof t.y === 'number';
+  // 页面坐标点（脚本按 boundingBox 算出的 {x, y}）在可视区外时先把页面滚过去，返回滚动后对应的新坐标；
+  // 与 moveTo 元素时的 scrollIntoViewIfNeeded 一样，避免指针落到任务栏或可视区外
+  async function revealPoints(pts) {
+    if (!pts.length) return pts;
+    const view = await page.evaluate(() => ({ w: window.innerWidth, h: window.innerHeight }));
+    const want = revealShift(pts, view);
+    if (!want.dx && !want.dy) return pts;
+    const got = await page.evaluate(([dx, dy]) => {
+      const x0 = window.scrollX;
+      const y0 = window.scrollY;
+      window.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+      return { dx: window.scrollX - x0, dy: window.scrollY - y0 };
+    }, [want.dx, want.dy]);
+    emit('reveal', { want, got });
+    if (got.dx || got.dy) await sleep(rand(250, 450));
+    return pts.map(p => ({ ...p, x: p.x - got.dx, y: p.y - got.dy }));
+  }
   const ctx = {
     page, context, browser, cwd: args.cwd, dryRun: args.dryRun, sleep,
     screen: { width: b.W, height: b.H },
@@ -213,8 +230,10 @@ async function main() {
     async moveTo(t, opts = {}) {
       await ensureBrowser();
       let p;
-      if (isPoint(t)) p = await toScreen(t.x, t.y);
-      else {
+      if (isPoint(t)) {
+        const [q] = opts.noReveal ? [t] : await revealPoints([t]);
+        p = await toScreen(q.x, q.y);
+      } else {
         const loc = target(t);
         await loc.scrollIntoViewIfNeeded();
         const box = await loc.boundingBox();
@@ -289,9 +308,17 @@ async function main() {
     async drag(from, to, opts = {}) {
       await ensureBrowser();
       const btn = opts.button || 'left';
-      const stops = Array.isArray(to) ? to : [to];
+      let stops = Array.isArray(to) ? to : [to];
       if (!stops.length) throw new Error('ctx.drag 至少要给一个终点');
-      await ctx.moveTo(from, opts.from || {});
+      // 起点与各途经点里的页面坐标一起滚进可视区，同一次滚动后整体换算，保持彼此的相对位置
+      const pointIdx = [from, ...stops].map((s, i) => (isPoint(s) ? i : -1)).filter(i => i >= 0);
+      if (pointIdx.length) {
+        const all = [from, ...stops];
+        const moved = await revealPoints(pointIdx.map(i => all[i]));
+        pointIdx.forEach((i, k) => { all[i] = moved[k]; });
+        [from, ...stops] = all;
+      }
+      await ctx.moveTo(from, { ...(opts.from || {}), noReveal: true });
       await sleep(opts.hover ?? rand(150, 300));
       await b.button(btn, true);
       held.buttons.add(btn);
@@ -305,7 +332,8 @@ async function main() {
             const v = await b.viewport();
             await human.moveTo(mouse.x + (s.dx || 0) * v.dpr, mouse.y + (s.dy || 0) * v.dpr, ms);
           } else {
-            await ctx.moveTo(s, { ms });
+            // 按下鼠标后不能再滚动页面，途经点已在上面统一换算过
+            await ctx.moveTo(s, { ms, noReveal: true });
           }
           await sleep(opts.pause ?? rand(60, 140));
         }

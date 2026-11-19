@@ -195,3 +195,36 @@ def test_x11_file_dialog_path_follows_last_dir():
     assert 'abs.startsWith(lastDir + \'/\') ? abs.slice(lastDir.length + 1) : abs' in x11
     i, j = x11.index('const rel = dir === lastDir'), x11.index('lastDir = dir;')
     assert i < j
+
+
+def test_reveal_points_before_drag():
+    """页面坐标点在可视区外（如本机桌面被任务栏挡住的下沿）时，先滚动页面再移动或拖动。"""
+    node = _node()
+    if not node:
+        pytest.skip('没有 node')
+    url = (HARNESS / 'human.mjs').as_uri()
+    js = (f"import {{ revealShift }} from '{url}';"
+          "const v = {w: 1920, h: 928};"
+          "console.log(JSON.stringify(["
+          "revealShift([{x: 100, y: 500}], v),"
+          "revealShift([{x: 60, y: 1040}, {x: 380, y: 1040}], v),"
+          "revealShift([{x: 60, y: 5}], v),"
+          "revealShift([{x: 60, y: 1100}, {x: 60, y: 3000}], v),"
+          "revealShift([], v)]))")
+    r = subprocess.run([node, '--input-type=module', '-e', js], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out[0] == {'dx': 0, 'dy': 0}
+    # 下沿外的滑块：滚到居中，起终点一起换算
+    assert out[1] == {'dx': 0, 'dy': 1040 - 464}
+    assert out[2]['dy'] < 0
+    # 放不下时保证起点可见
+    assert out[3]['dy'] == 1100 - 464
+    assert out[4] == {'dx': 0, 'dy': 0}
+    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    assert 'async function revealPoints(pts)' in h
+    # 拖动按下之前统一滚动，按下后的途经点不再滚动
+    d = h.index('async drag(from, to')
+    i, j = h.index('const moved = await revealPoints(', d), h.index('await b.button(btn, true)', d)
+    assert i < j
+    assert "await ctx.moveTo(s, { ms, noReveal: true })" in h

@@ -90,3 +90,19 @@ export function typingDelays(text, base = 85) {
   }
   return out;
 }
+
+// 页面坐标点不在可视区域内时，算出要把页面滚多少（CSS 像素）才能把这些点都露出来：
+// 本机桌面浏览器的可视区比虚拟屏矮（任务栏、标签栏高度不同），试跑时看得见的点正式录制时可能在可视区外
+// view 为 {w, h}（window.innerWidth/innerHeight）；全部可见时返回 {dx: 0, dy: 0}
+export function revealShift(points, view, margin = 24) {
+  const axis = (vals, size) => {
+    const lo = Math.min(...vals);
+    const hi = Math.max(...vals);
+    if (lo >= margin && hi <= size - margin) return 0;
+    // 放得下就让这些点居中，放不下就保证第一个点（拖动起点）可见
+    if (hi - lo <= size - margin * 2) return Math.round((lo + hi) / 2 - size / 2);
+    return Math.round(vals[0] - size / 2);
+  };
+  if (!points.length) return { dx: 0, dy: 0 };
+  return { dx: axis(points.map(p => p.x), view.w), dy: axis(points.map(p => p.y), view.h) };
+}
