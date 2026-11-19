@@ -1005,3 +1005,17 @@ def test_record_reasoning_effort():
     cfg['record_reasoning_effort'] = ' '
     assert effort('qa-record') == 'model_reasoning_effort="xhigh"'
     assert config.DEFAULTS['record_reasoning_effort'] == 'high'
+
+
+def test_record_issues_kill_only_shell_command():
+    """录屏步骤里结束进程的 kill 要拦下；页面里填的事件类型 kill（如 kill wolf）不算。"""
+    def hit(cmd):
+        return [i for i in pipeline.record_issues([{'action': '操作', 'command': cmd, 'expect': '现象'}])
+                if '启动结束服务' in i['rule']]
+    assert hit('kill "$(cat .qa/record.pid)"')
+    assert hit('kill -9 1234')
+    assert hit('kill %1')
+    assert hit('pkill -f http.server')
+    assert hit('killall node')
+    assert not hit('kill\nwolf')
+    assert not hit('事件type填为kill 默认tag键填wolf')

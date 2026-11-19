@@ -534,7 +534,10 @@ def _record_lines(t: dict) -> list[str]:
 
 # 录屏步骤（真正录制的部分）专用：启动结束服务、临时脚本、控制台注入都不该出现在录制里
 _RECORD_ONLY_RULES = [
-    (r'\bnohup\b|\bkill\b|http\.server|\bnpm\s+(i|install|ci)\b|\bpip\s+install\b',
+    # kill 只认 shell 写法（kill 后跟信号、进程号、$变量、%作业或引号里的命令替换，以及 pkill、killall），
+    # 页面里填的游戏事件类型 kill 之类不算
+    (r'\bnohup\b|\bkill\s+(-\w+\s+)?["\']?[\d$%]|\bpkill\b|\bkillall\b|http\.server|\bnpm\s+(i|install|ci)\b'
+     r'|\bpip\s+install\b',
      '安装依赖或启动结束服务 放到不录的录屏前准备与收尾'),
     (r'<<|\bpython3?\s+-\s|\bnode\s+-e\b',
      '在录屏里跑临时脚本复现 改成产物页面上的正常操作 需要的输入文件在录屏前准备里生成'),
