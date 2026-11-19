@@ -120,3 +120,31 @@ def check(audio: bool) -> list[dict]:
         rc, out = _run([exe(t['ffmpeg']), '-hide_banner', '-filters'])
         items.append(('ffmpeg ddagrab', rc == 0 and 'ddagrab' in out, 'winget upgrade Gyan.FFmpeg（需要 6.1 以上）'))
     return [{'name': n, 'ok': ok, 'detail': '可用' if ok else '缺失', 'fix': fix} for n, ok, fix in items]
+
+
+def parse_excluded(text: str) -> list[tuple[int, int]]:
+    """解析 netsh int ipv4 show excludedportrange 的输出：每行「开始端口 结束端口 [*]」。"""
+    out = []
+    for line in text.splitlines():
+        parts = line.replace('*', ' ').split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            lo, hi = int(parts[0]), int(parts[1])
+            if lo <= hi:
+                out.append((lo, hi))
+    return out
+
+
+def excluded_ports(force: bool = False) -> list[tuple[int, int]]:
+    """Windows 保留的 TCP 端口段（Hyper-V、WinNAT 等占用，开机后会变）：落在这些段里的端口，
+    WSL 的 localhost 转发没法在 Windows 侧监听，本机桌面的浏览器访问会被拒。缓存 60 秒，查询失败返回空列表。"""
+    if not force and _cache.get('excl_t', 0) > time.time() - 60:
+        return list(_cache['excl'])
+    rc, out = _run(['/mnt/c/Windows/System32/netsh.exe', 'int', 'ipv4', 'show', 'excludedportrange', 'protocol=tcp'])
+    rngs = parse_excluded(out) if rc == 0 else []
+    _cache['excl'] = rngs
+    _cache['excl_t'] = time.time()
+    return list(rngs)
+
+
+def port_excluded(port: int, rngs: list[tuple[int, int]]) -> bool:
+    return any(lo <= port <= hi for lo, hi in rngs)

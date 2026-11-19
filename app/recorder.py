@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -129,6 +130,67 @@ def script_key(t: dict) -> str:
     raw = json.dumps([t.get('artifact_sha'), t.get('record_steps'), t.get('record_prep'), HARNESS_API],
                      ensure_ascii=False, sort_keys=True)
     return hashlib.sha1(raw.encode('utf-8')).hexdigest()
+
+
+_LOCAL_PORT = re.compile(r'(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{4,5})\b')
+
+
+def _sub_port(v, old: int, new: int):
+    """把内容里独立出现的端口号 old 换成 new（不碰更长数字里的同样几位），递归处理列表与字典。"""
+    pat = re.compile(rf'(?<!\d){old}(?!\d)')
+    if isinstance(v, str):
+        return pat.sub(str(new), v)
+    if isinstance(v, list):
+        return [_sub_port(x, old, new) for x in v]
+    if isinstance(v, dict):
+        return {k: _sub_port(x, old, new) for k, x in v.items()}
+    return v
+
+
+def _port_busy(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.3)
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+
+def remap_excluded_ports(task_id: int, log, rngs: list[tuple[int, int]] | None = None) -> dict:
+    """本机桌面录制前：录屏用的 localhost 端口落在 Windows 保留端口段里时，换成本题端口段里可用的端口。
+    录屏前准备、录屏步骤、录屏脚本缓存一起换，脚本缓存原本有效就按新内容重算键，不用重新生成。返回 {旧端口: 新端口}。"""
+    t = db.get_task(task_id)
+    rngs = wintools.excluded_ports() if rngs is None else rngs
+    if not rngs:
+        return {}
+    prep = t.get('record_prep') or {}
+    cache = t.get('record_script') or {}
+    text = json.dumps([prep, t.get('record_steps'), cache.get('script')], ensure_ascii=False)
+    used = {int(p) for p in _LOCAL_PORT.findall(text)}
+    bad = sorted(p for p in used if wintools.port_excluded(p, rngs))
+    if not bad:
+        return {}
+    p0, p1 = P.port_range(t)
+    free = (p for p in range(p0, p1 + 1)
+            if p not in used and not wintools.port_excluded(p, rngs) and not _port_busy(p))
+    mapping = {}
+    for old in bad:
+        new = next(free, None)
+        if new is None:
+            raise RecordError(f'录屏用的端口 {old} 在 Windows 保留端口段里，本题端口段 {p0}-{p1} 也没有可用端口，'
+                              '调整配置里的 port_base 后重试')
+        mapping[old] = new
+    key_ok = cache.get('key') == script_key(t)
+    fields = {'record_prep': prep, 'record_steps': t.get('record_steps')}
+    script = cache.get('script')
+    for old, new in mapping.items():
+        fields['record_prep'] = _sub_port(fields['record_prep'], old, new)
+        fields['record_steps'] = _sub_port(fields['record_steps'], old, new)
+        if script:
+            script = _sub_port(script, old, new)
+    if script and key_ok:
+        fields['record_script'] = dict(cache, script=script, key=script_key({**t, **fields}))
+    db.update_task(task_id, **fields)
+    log('录屏端口在 Windows 保留端口段里（本机桌面的浏览器访问会被拒），已换成：'
+        + '，'.join(f'{a}→{b}' for a, b in mapping.items()))
+    return mapping
 
 
 def login_env() -> dict:
@@ -579,6 +641,10 @@ def run_record(task_id: int, run_key: str, log, stop):
         if miss:
             raise RecordError('本机桌面录屏工具缺失：' + '、'.join(miss) + '，执行 scripts/setup-desktop-record.ps1 安装')
     max_sec = int(cfg['record_max_sec'])
+    if desktop:
+        # 端口换过就重新读取题目，后面的准备、脚本缓存都按新端口
+        if remap_excluded_ports(task_id, log):
+            t = db.get_task(task_id)
     cache = t.get('record_script') or {}
     if cache.get('key') == script_key(t) and cache.get('manual_needed'):
         raise ManualNeeded(f"录屏脚本生成时判断需要人工录屏：{cache.get('reason')}")
