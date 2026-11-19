@@ -713,6 +713,41 @@ def test_rework_flow_with_fake_codex(client, monkeypatch):
     assert client.post(f'/api/tasks/{tid2}/action/rework', json={'text': REWORK_TEXT}).status_code == 400
 
 
+def test_review_sets_lang_from_artifact(client, monkeypatch):
+    """语言/框架以验收按最终产物填写的为准，规整成官方大小写；验收没给时保留出题时的预估。"""
+    from app import gitops
+    tid = new_task(status=pipeline.S_REVIEW, artifact_sha='b' * 40, lang_framework='python,javascript,fastapi')
+    out = {'lang_framework': 'javascript, html, css'}
+
+    def fake(skill, text, run_key, log, stop=None):
+        return {'evidence': [], 'delivery_score': 2, 'score_reason': '白屏', 'feedback': GOOD_FEEDBACK,
+                'record_steps': [{'action': '打开页面', 'command': '', 'expect': '白屏'}],
+                'record_prep': {'setup': 'npm start &', 'cleanup': ''}, 'reproducibility': '无外部依赖',
+                'remark': '', 'self_check': {'has_process': True, 'has_product': True, 'has_code_anchor': True,
+                                             'score_consistent': True, 'note': 'ok'}, **out}
+    monkeypatch.setattr(codex_runner, 'run_skill', fake)
+    monkeypatch.setattr(gitops, 'fresh_clone', lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, '_review_input', lambda *a, **k: '输入')
+    assert wait_run(pipeline.start_review(tid))['status'] == 'success'
+    assert db.get_task(tid)['lang_framework'] == 'JavaScript, HTML, CSS'
+    tid2 = new_task(branch='b2', status=pipeline.S_REVIEW, artifact_sha='b' * 40, lang_framework='Go, Gin')
+    out = {'lang_framework': ''}
+    assert wait_run(pipeline.start_review(tid2))['status'] == 'success'
+    assert db.get_task(tid2)['lang_framework'] == 'Go, Gin'
+
+
+def test_rework_fixes_lang_framework(client, monkeypatch):
+    """质检指出语言/框架与产物不符时，返修改写这一格，提交表列出改动。"""
+    tid = done_task(lang_framework='python,javascript,fastapi')
+    seen = fake_rework(monkeypatch, {'lang_framework': 'JavaScript, Canvas2D'})
+    key = client.post(f'/api/tasks/{tid}/action/rework', json={'text': REWORK_TEXT}).json()['run_key']
+    assert wait_run(key)['status'] == 'success'
+    assert '语言/框架 python,javascript,fastapi' in seen['text']
+    assert db.get_task(tid)['lang_framework'] == 'JavaScript, Canvas 2D'
+    d = client.get(f'/api/tasks/{tid}').json()
+    assert '语言/框架' in d['inspections'][0]['changed_columns']
+
+
 def test_rework_artifact_changed_needs_record(client, monkeypatch):
     """修复目录有改动时推送新的产物快照，回到待录屏，录完回到已完成并结束本轮质检。"""
     tid = done_task()
@@ -768,21 +803,25 @@ def test_rework_schema_matches():
 
 
 def test_normalize_lang_in_submission(client):
-    """提交表的语言/框架不带版本号，英文小写，英文逗号分隔；编辑保存时同样规整。"""
+    """提交表的语言/框架不带版本号，按官方大小写，用「, 」分隔（作业说明示例 Go, Gin, PostgreSQL）；编辑保存时同样规整。"""
     from app import submission
     n = submission.normalize_lang
-    assert n('Java, Python, Node.js') == 'java,python,nodejs'
+    assert n('Java, Python, Node.js') == 'Java, Python, Node.js'
     assert n('Node.js 22 + 原生JavaScript（Web Worker、Web Audio、Canvas）；Python 3.12标准库生成素材') == \
-        'nodejs,javascript,webworker,webaudio,canvas,python'
-    assert n('C++17 + OpenGL 4.5') == 'c++,opengl'
-    assert n('TypeScript>=5.4 + React 18') == 'typescript,react'
-    assert n('Go 1.22, FFmpeg 6.x, H.264') == 'go,ffmpeg,h264'
+        'Node.js, JavaScript, Web Worker, Web Audio API, Canvas, Python'
+    assert n('C++17 + OpenGL 4.5') == 'C++, OpenGL'
+    assert n('TypeScript>=5.4 + React 18') == 'TypeScript, React'
+    assert n('Go 1.22, FFmpeg 6.x, H.264') == 'Go, FFmpeg, H.264'
+    # 旧的小写写法改成官方大小写，同一项只留一个；不认识的名字保留原写法
+    assert n('python,javascript,numpy,scipy,canvas') == 'Python, JavaScript, NumPy, SciPy, Canvas'
+    assert n('javascript, JavaScript, nodejs, node.js') == 'JavaScript, Node.js'
+    assert n('JavaScript, Canvas2D, wgpu, MyLib') == 'JavaScript, Canvas 2D, wgpu, MyLib'
     assert n('') == '' and n(None) == ''
     tid = done_task(lang_framework='Python 3.12 + SQLite')
     cells = {c['name']: c['value'] for c in client.post('/api/submission', json={}).json()['rows'][0]['cells']}
-    assert cells['语言/框架'] == 'python,sqlite'
+    assert cells['语言/框架'] == 'Python, SQLite'
     r = client.put(f'/api/tasks/{tid}', json={'lang_framework': 'Rust 1.80 / wgpu'}).json()
-    assert r['lang_framework'] == 'rust,wgpu'
+    assert r['lang_framework'] == 'Rust, wgpu'
 
 
 def test_migrate_fresh_and_existing(data_dir):

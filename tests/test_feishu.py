@@ -51,7 +51,7 @@ def test_build_record_maps_schema(data_dir):
     f = rec['fields']
     assert 'UID' not in f and '格式校验' not in f
     assert f['所属领域'] == ['游戏、图形与多媒体'] and f['环境可复现等级'] == ['无外部依赖']
-    assert f['语言|框架'] == 'python,flask' and f['TurnID|PromptID'] == 'p-1'
+    assert f['语言|框架'] == 'Python, Flask' and f['TurnID|PromptID'] == 'p-1'
     assert f['交付完整性'] == 3 and isinstance(f['交付完整性'], int)
     assert f['产物快照'].endswith('/commit/' + 'b' * 40)
     # 空值不写，更新时保留飞书里的原值

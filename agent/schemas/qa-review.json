@@ -42,6 +42,7 @@
       "additionalProperties": false
     },
     "reproducibility": { "type": "string", "enum": ["无外部依赖", "有外部依赖，未容器化", "已容器化，可一键起环境"] },
+    "lang_framework": { "type": "string" },
     "remark": { "type": "string" },
     "self_check": {
       "type": "object",
@@ -57,6 +58,6 @@
     }
   },
   "required": ["evidence", "delivery_score", "score_reason", "feedback", "record_prep", "record_steps",
-               "reproducibility", "remark", "self_check"],
+               "reproducibility", "lang_framework", "remark", "self_check"],
   "additionalProperties": false
 }

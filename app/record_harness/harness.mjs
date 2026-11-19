@@ -194,7 +194,11 @@ async function main() {
     }
   }
 
-  const ensureBrowser = async () => { if (b.front() !== 'browser') await b.raise('browser'); };
+  // 回到浏览器：打开着下载的文件（看图、记事本）时先关掉，与人看完关窗口一样
+  const ensureBrowser = async () => {
+    if (b.viewerOpen?.()) await b.closeFile();
+    if (b.front() !== 'browser') await b.raise('browser');
+  };
   const target = t => (typeof t === 'string' ? page.locator(t).first() : t);
   const isPoint = t => t && typeof t === 'object' && typeof t.x === 'number' && typeof t.y === 'number';
   const ctx = {
@@ -204,7 +208,7 @@ async function main() {
     // 整块屏幕截图（看得到终端与指针），试跑时用来核对画面；正式录制时不截，避免抢占录制
     shot: name => (args.dryRun ? grab(path.join(shotDir, `${String(name).replace(/[^\w.-]/g, '_')}.png`))
       : Promise.resolve(emit('shot-skip', { name }))),
-    showBrowser: () => b.raise('browser'),
+    showBrowser: () => ensureBrowser(),
     // 指针移到元素上（落点在中心附近随机，或页面坐标 {x, y} 精确落点），悬停效果与指针形状随之变化
     async moveTo(t, opts = {}) {
       await ensureBrowser();
@@ -354,7 +358,13 @@ async function main() {
         await human.click();
         await sleep(rand(200, 400));
         await b.key('ctrl+a');
-        await human.type(url, 55);
+        // 长网址（如本地文件路径）与人一样粘贴，不逐字打；短网址按正常速度打完整（地址栏的自动补全会被覆盖）
+        if ([...String(url)].length > 30) {
+          emit('paste', { chars: [...String(url)].length });
+          await b.pasteText(String(url));
+        } else {
+          await human.type(url, 110);
+        }
         await sleep(rand(250, 500));
         await b.key('Return');
       }, opts);
@@ -490,6 +500,24 @@ async function main() {
       }
       await sleep(rand(300, 600));
     },
+    // 点下载按钮并等下载完成，返回 {name, path}：本机桌面上由 Chrome 按原文件名存进「下载」下以分支命名的文件夹
+    // （下载气泡显示文件名与对应格式的图标）；path 可以直接传给 ctx.upload 导回、传给 ctx.openFile 查看
+    async download(t, opts = {}) {
+      await ensureBrowser();
+      const d = await b.download(() => ctx.click(t, opts), opts.timeout ?? 60);
+      await sleep(rand(600, 1000));
+      return d;
+    },
+    // 用系统程序查看文件（不要在浏览器地址栏里打开）：本机桌面上在资源管理器里定位到文件，图片双击用系统看图打开，
+    // 文本（json、txt、csv 等）右键「打开方式 → 记事本」；file 是 ctx.download 的返回值或文件路径。
+    // 看完调用 ctx.closeFile()，或下一个浏览器操作前自动关掉。试跑（虚拟屏）时在浏览器新标签页里打开
+    async openFile(file, opts = {}) {
+      const abs = file && typeof file === 'object' ? file.path : path.posix.resolve(args.cwd, String(file));
+      if (b.viewerOpen?.()) await b.closeFile();
+      await b.openFile(abs, human, opts);
+      await sleep(opts.pause ?? 2500);
+    },
+    closeFile: () => b.closeFile(),
     // 后台执行命令（不出现在画面上），用于在脚本里核对状态
     exec: (cmd, opts = {}) => b.exec(cmd, opts.timeout ?? 30),
     term: {

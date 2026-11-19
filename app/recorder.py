@@ -27,7 +27,7 @@ from . import codex_runner, config, db, envcheck, jobs, pipeline as P, submissio
 
 HARNESS = Path(__file__).resolve().parent / 'record_harness' / 'harness.mjs'
 # 执行器接口版本：ctx 的用法有变化时加一，缓存的旧录屏脚本随之作废、重新生成
-HARNESS_API = 4
+HARNESS_API = 5
 # 录屏文件的高度（作业要求 720p）：屏幕更高时合成时按比例缩小
 OUT_HEIGHT = 720
 SINK = 'fbrec'

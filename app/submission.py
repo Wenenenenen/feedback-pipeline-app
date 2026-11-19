@@ -10,24 +10,49 @@ from . import config
 
 # 语言/框架：中文、分隔符、括号都当作分隔；「+」两侧有空格或紧跟字母时才是分隔（保留 c++ 这类名字）
 _LANG_SPLIT = re.compile(r'[　-〿＀-￯一-鿿㐀-䶿,;/|()\[\]{}]+'
-                         r'|\s+\+\s+|(?<=[a-z0-9])\+(?=[a-z])')
+                         r'|\s+\+\s+|(?<=[a-z0-9])\+(?=[a-z])', re.I)
 # 版本号：比较符版本（>=5.4）、独立的数字串（可带 v 或 r 前缀、.x 后缀）、
 # 紧贴在名字后的点分版本（python3.12）、c++ 后的标准号（c++17）
 _LANG_VERSION = re.compile(r'(?:>=|<=|>|<|~|\^)\s*\d+(?:\.\d+)*(?:\.x)?'
                            r'|(?:^|\s)[vr]?\d+(?:\.\d+)*(?:\.x)?(?=\s|$)'
                            r'|(?<=[a-z])\d+(?:\.\d+)+$'
-                           r'|(?<=\+\+)\d+$')
+                           r'|(?<=\+\+)\d+$', re.I)
+# 常见语言、框架、库的官方写法（键为去掉空格与标点的小写名）；不在表里的保留原写法
+_LANG_CANON = {
+    'javascript': 'JavaScript', 'js': 'JavaScript', 'typescript': 'TypeScript', 'ts': 'TypeScript',
+    'html': 'HTML', 'html5': 'HTML', 'css': 'CSS', 'css3': 'CSS', 'python': 'Python', 'go': 'Go', 'golang': 'Go',
+    'rust': 'Rust', 'java': 'Java', 'kotlin': 'Kotlin', 'swift': 'Swift', 'c': 'C', 'c++': 'C++', 'cpp': 'C++',
+    'c#': 'C#', 'csharp': 'C#', 'ruby': 'Ruby', 'php': 'PHP', 'lua': 'Lua', 'bash': 'Bash', 'shell': 'Shell',
+    'sql': 'SQL', 'glsl': 'GLSL', 'wgsl': 'WGSL', 'hlsl': 'HLSL', 'cuda': 'CUDA',
+    'nodejs': 'Node.js', 'node': 'Node.js', 'deno': 'Deno', 'bun': 'Bun',
+    'react': 'React', 'vue': 'Vue', 'vuejs': 'Vue', 'svelte': 'Svelte', 'angular': 'Angular', 'vite': 'Vite',
+    'express': 'Express', 'nextjs': 'Next.js', 'threejs': 'Three.js', 'three': 'Three.js', 'd3': 'D3.js',
+    'd3js': 'D3.js', 'pixijs': 'PixiJS', 'tailwindcss': 'Tailwind CSS', 'tailwind': 'Tailwind CSS',
+    'canvas': 'Canvas', 'canvas2d': 'Canvas 2D', 'webgl': 'WebGL', 'webgl2': 'WebGL2', 'webgpu': 'WebGPU',
+    'webaudio': 'Web Audio API', 'webaudioapi': 'Web Audio API', 'webworker': 'Web Worker',
+    'webworkers': 'Web Worker', 'webassembly': 'WebAssembly', 'wasm': 'WebAssembly', 'websocket': 'WebSocket',
+    'webrtc': 'WebRTC', 'webcodecs': 'WebCodecs', 'indexeddb': 'IndexedDB', 'svg': 'SVG',
+    'fastapi': 'FastAPI', 'flask': 'Flask', 'django': 'Django', 'numpy': 'NumPy', 'scipy': 'SciPy',
+    'pandas': 'pandas', 'pillow': 'Pillow', 'opencv': 'OpenCV', 'pytorch': 'PyTorch', 'torch': 'PyTorch',
+    'tensorflow': 'TensorFlow', 'pytest': 'pytest', 'matplotlib': 'Matplotlib',
+    'gin': 'Gin', 'spring': 'Spring', 'springboot': 'Spring Boot', 'sqlite': 'SQLite', 'postgresql': 'PostgreSQL',
+    'postgres': 'PostgreSQL', 'mysql': 'MySQL', 'redis': 'Redis', 'mongodb': 'MongoDB', 'docker': 'Docker',
+    'ffmpeg': 'FFmpeg', 'opengl': 'OpenGL', 'vulkan': 'Vulkan', 'sdl': 'SDL', 'sdl2': 'SDL2', 'h264': 'H.264',
+    'playwright': 'Playwright', 'jest': 'Jest', 'vitest': 'Vitest',
+}
 
 
 def normalize_lang(text: str | None) -> str:
-    """提交表的语言/框架：去掉版本号，英文小写，用英文逗号分隔，如 java,python,nodejs。"""
-    out = []
-    for tok in _LANG_SPLIT.split((text or '').lower()):
-        tok = _LANG_VERSION.sub(' ', tok.strip())
-        tok = re.sub(r'[^a-z0-9+#\-]', '', tok)  # 去掉空格与点，node.js 记为 nodejs
-        if tok and not tok.isdigit() and tok not in out:
-            out.append(tok)
-    return ','.join(out)
+    """提交表的语言/框架：去掉版本号与说明，按官方大小写写名字，用「, 」分隔，如 Go, Gin, PostgreSQL（作业说明的写法）。"""
+    out, seen = [], set()
+    for tok in _LANG_SPLIT.split(text or ''):
+        tok = re.sub(r'\s+', ' ', _LANG_VERSION.sub(' ', tok.strip())).strip(' .-_')
+        key = re.sub(r'[^a-z0-9+#]', '', tok.lower())  # 去掉空格与点，Node.js 与 nodejs 视为同一项
+        if not key or key.isdigit() or key in seen:
+            continue
+        seen.add(key)
+        out.append(_LANG_CANON.get(key, tok))
+    return ', '.join(out)
 
 # 提交表列顺序
 COLUMNS = ['序号', '分支', 'User Prompt', '所属领域', '子方向', '任务类型', '任务难度', '语言/框架',

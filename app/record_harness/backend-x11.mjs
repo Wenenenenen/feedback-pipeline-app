@@ -3,6 +3,7 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { rand, sleep } from './human.mjs';
 
 const shq = s => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -69,6 +70,8 @@ export async function createBackend(args, emit) {
   let term = null;
   let browserWin = null;
   let front = 'browser';
+  // 浏览器保存下载文件的目录
+  let dlDir = null;
   const b = { W, H, name: 'x11' };
 
   async function startTerminal() {
@@ -141,6 +144,11 @@ export async function createBackend(args, emit) {
         '--disable-features=Translate,TranslateUI', '--lang=zh-CN'],
     });
     page = context.pages()[0] || await context.newPage();
+    dlDir = path.join(args.work, 'downloads');
+    fs.rmSync(dlDir, { recursive: true, force: true });
+    fs.mkdirSync(dlDir, { recursive: true });
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: dlDir });
     browserWin = await findWindow(['--class', 'chrom']);
     await xdo('mousemove', Math.round(W / 2), Math.round(H * 0.6));
     return { page, context, browser: context.browser(), mouse: { x: Math.round(W / 2), y: Math.round(H * 0.6) } };
@@ -245,6 +253,46 @@ export async function createBackend(args, emit) {
     }
     front = 'browser';
     return true;
+  };
+
+  // 下载：Playwright 默认把下载接管成没有扩展名的临时文件（下载气泡里显示一串 GUID 和通用图标），
+  // 改为由浏览器按原文件名存到工作目录的 downloads 下；等新文件出现且大小不再变化
+  b.download = async (trigger, timeoutSec = 60) => {
+    const before = new Set(fs.readdirSync(dlDir));
+    await trigger();
+    const end = Date.now() + timeoutSec * 1000;
+    let last = null;
+    while (Date.now() < end) {
+      const name = fs.readdirSync(dlDir).find(f => !before.has(f) && !f.endsWith('.crdownload'));
+      if (name) {
+        const size = fs.statSync(path.join(dlDir, name)).size;
+        if (last && last.name === name && last.size === size) {
+          emit('download', { name });
+          const file = path.join(dlDir, name);
+          return { name, path: file, winPath: file };
+        }
+        last = { name, size };
+      }
+      await sleep(200);
+    }
+    throw new Error('点击后没有下载完成');
+  };
+  // 打开文件：虚拟屏里没有系统看图和记事本，在浏览器新标签页里打开（试跑核对流程用）
+  let viewerPage = null;
+  b.openFile = async abs => {
+    viewerPage = await context.newPage();
+    await viewerPage.goto(pathToFileURL(abs).href);
+    await viewerPage.bringToFront();
+    front = 'viewer';
+    emit('open-file', { name: path.posix.basename(abs), kind: 'browser-tab' });
+    return true;
+  };
+  b.viewerOpen = () => !!viewerPage;
+  b.closeFile = async () => {
+    await viewerPage?.close().catch(() => {});
+    viewerPage = null;
+    await page.bringToFront().catch(() => {});
+    front = '';
   };
 
   b.exec = (cmd, timeoutSec = 30) => new Promise(resolve => {

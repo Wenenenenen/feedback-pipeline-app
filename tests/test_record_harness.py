@@ -36,10 +36,34 @@ def test_multi_upload_supported_by_both_backends():
     # 不再限制一次只能选一个文件，多选时文件名不能重复
     assert '一次只能选一个文件' not in h
     assert '多选的文件名不能重复' in h
-    # 虚拟屏后端声明用 filechooser 接管多选，本机桌面后端在对话框里输入带引号的文件名列表
+    # 虚拟屏后端声明用 filechooser 接管多选；本机桌面后端在文件列表里按住 Ctrl 逐个点或按住 Shift 连选，
+    # 列表里找不到时才在文件名框里输入带引号的文件名列表
     assert "b.multiUploadVia = 'filechooser'" in (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
     win = (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
-    assert 'Array.isArray(absOrList)' in win and "combo: 'alt+n'" in win
+    assert 'uiaFindMany(dlg.hwnd, names)' in win and "contiguous ? 'shift' : 'ctrl'" in win
+    assert "helper.req('keyup', { combo: mod })" in win and "combo: 'alt+n'" in win
+    # 对话框弹出后指针不再先移到对话框正中间
+    choose = win[win.index('b.chooseFile ='):win.index('b.download =')]
+    assert 'dlg.rect' not in choose
+    ps = (HARNESS / 'uia_find.ps1').read_text(encoding='utf-8-sig')
+    assert '[string]$Names' in ps and "$Kind -eq 'menu'" in ps
+
+
+def test_download_and_open_file():
+    """下载由 Chrome 按原文件名存进暂存目录（下载气泡显示格式图标）；下载的文件用系统看图或记事本打开，地址栏长网址粘贴。"""
+    h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    assert 'async download(t' in h and 'async openFile(file' in h and 'closeFile: () => b.closeFile()' in h
+    assert 'if (b.viewerOpen?.()) await b.closeFile();' in h
+    goto = h[h.index('async goto(url'):h.index('async select(t')]
+    assert 'b.pasteText(String(url))' in goto
+    win = (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
+    assert "behavior: 'allow', downloadPath: staging" in win and 'await ownDownloads();' in win
+    assert "['打开方式', 'Open with']" in win and "['记事本', 'Notepad']" in win and '/select,' in win
+    x11 = (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
+    assert 'b.download = async' in x11 and 'b.openFile = async' in x11 and 'b.closeFile = async' in x11
+    assert "behavior: 'allow', downloadPath: dlDir" in x11 and "page.waitForEvent('download'" not in x11
+    s = SKILL.read_text(encoding='utf-8')
+    assert 'ctx.download(' in s and 'ctx.openFile(' in s and "waitForEvent('download')" in s
 
 
 def test_console_action_documented():

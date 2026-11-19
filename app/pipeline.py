@@ -605,7 +605,7 @@ def _review_input(t: dict, verify_dir: Path, run_key: str = '预览') -> str:
         '## 题目',
         f"分支 {t['branch']}",
         f"所属领域 {t['domain']} 子方向 {t['subdomain']} 难度 {t['difficulty']}",
-        f"语言/框架 {t['lang_framework']}",
+        f"语言/框架（出题时预估，验收按最终产物重新填写）{t['lang_framework'] or '未填'}",
         'User Prompt 原文：', t['user_prompt'],
         '', '## 内部验收要点', *[f'- {x}' for x in t['acceptance_points'] or []],
         '', '## 环境检查结果', *(env_lines or ['无']),
@@ -637,10 +637,15 @@ def start_review(task_id: int) -> str:
         log(f"评分 {r['delivery_score']} 口吻与内容问题 {len(issues)} 条 "
             f"录屏步骤问题 {len(record_issues(r['record_steps'], r.get('record_prep')))} 条 "
             f"自检一致 {r['self_check']['score_consistent']}")
+        # 语言/框架以验收时核对的最终产物为准（出题时只是预估，产物常与预估不同，如纯前端却写了 Python）
+        lang = submission.normalize_lang(r.get('lang_framework'))
+        if lang and lang != t['lang_framework']:
+            log(f"语言/框架按最终产物改为 {lang}（出题时为 {t['lang_framework'] or '空'}）")
         db.update_task(task_id, evidence=r['evidence'], delivery_score=r['delivery_score'],
                        score_reason=r['score_reason'], feedback=r['feedback'],
                        record_steps=r['record_steps'], record_prep=r.get('record_prep'),
                        reproducibility=r['reproducibility'], remark=r['remark'], review_self_check=r['self_check'],
+                       **({'lang_framework': lang} if lang else {}),
                        status=S_CHECK, failed_from=None, last_error=None)
 
     return jobs.submit('qa-review', task_id, work, ai=True)
@@ -851,6 +856,7 @@ def _snapshot_lines(snap: dict) -> list[str]:
     prep = snap.get('record_prep') or {}
     return [f"交付完整性 {snap.get('delivery_score')}",
             f"环境可复现等级 {snap.get('reproducibility') or '未填'}",
+            f"语言/框架 {snap.get('lang_framework') or '未填'}",
             '评分理由：', snap.get('score_reason') or '无',
             'Feedback：', snap.get('feedback') or '无',
             '备注：', snap.get('remark') or '无',
@@ -943,6 +949,10 @@ def start_rework(task_id: int) -> str:
         fields = dict(feedback=r['feedback'], delivery_score=r['delivery_score'], remark=r['remark'],
                       reproducibility=r['reproducibility'], record_steps=r['record_steps'],
                       record_prep=r.get('record_prep'), review_self_check=r['self_check'], failed_from=None, last_error=None)
+        # 质检指出语言/框架与产物不符时由返修改写；没改时原样返回
+        lang = submission.normalize_lang(r.get('lang_framework'))
+        if lang:
+            fields['lang_framework'] = lang
         if changed:
             log(f"产物快照 {config.permalink(t['artifact_sha'])} → {config.permalink(art['sha'])}")
             fields['artifact_sha'] = art['sha']

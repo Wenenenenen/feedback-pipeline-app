@@ -57,20 +57,46 @@ function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return {}; }
 }
 
-// 用 UI 自动化在窗口里按文件名找列表项，返回 {cell, row} 屏幕矩形，找不到为 null
-function uiaFind(hwnd, name) {
+// 调 uia_find.ps1，返回最后一行 JSON，出错为 null
+function runUia(params) {
   return new Promise(resolve => {
     execFile('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(HERE, 'uia_find.ps1'),
-      '-Hwnd', String(hwnd), '-Name', name], { timeout: 15000, encoding: 'utf8' }, (err, stdout) => {
+      ...params], { timeout: 15000, encoding: 'utf8' }, (err, stdout) => {
       try {
-        const r = JSON.parse(String(stdout).trim().split('\n').pop());
-        resolve(r.found ? r : null);
+        resolve(JSON.parse(String(stdout).trim().split('\n').pop()));
       } catch {
         resolve(null);
       }
     });
   });
 }
+
+// 用 UI 自动化在窗口里按文件名找列表项，返回 {cell, row, index} 屏幕矩形，找不到为 null
+async function uiaFind(hwnd, name) {
+  const r = await runUia(['-Hwnd', String(hwnd), '-Name', name]);
+  return r && r.found ? r : null;
+}
+
+// 一次找多个文件，返回 [{name, found, index, cell, row}]（index 是在列表里的顺序），出错为 null
+async function uiaFindMany(hwnd, names) {
+  const r = await runUia(['-Hwnd', String(hwnd), '-Names', names.join('|')]);
+  return r && Array.isArray(r.items) ? r.items : null;
+}
+
+// 在某个进程弹出的右键菜单、子菜单里找名称以其中任一项开头的菜单项，返回屏幕矩形，找不到为 null
+async function uiaMenu(pid, alts) {
+  const r = await runUia(['-Kind', 'menu', '-ProcId', String(pid), '-Name', alts.join('|')]);
+  return r && r.found ? r.rect : null;
+}
+
+// 矩形里靠左的随机落点（文件名一格很宽，人一般点在文字上）
+const cellPoint = ([l, t, r, b]) => ({ x: l + Math.min(r - l, 160) * rand(0.25, 0.7), y: t + (b - t) * rand(0.35, 0.65) });
+const rectCenter = ([l, t, r, b]) => ({ x: l + (r - l) * rand(0.35, 0.6), y: t + (b - t) * rand(0.4, 0.6) });
+// 指针移到某个点（{x, y}）
+const goTo = (human, p) => human.moveTo(p.x, p.y);
+const isExe = (w, exe) => String(w.exe || '').toLowerCase() === exe;
+// 用系统看图打开的图片，其余（json、txt、csv、日志等）用记事本打开
+const IMAGE_EXT = /\.(png|jpe?g|gif|bmp|webp|tiff?|ico)$/i;
 
 // 合并写入 Chrome 配置：关掉翻译，文件对话框默认打开暂存目录，上次正常退出（不弹恢复提示）
 function patchProfile(profile, staging) {
@@ -179,6 +205,7 @@ export async function createBackend(args, emit) {
     if (!browser) throw new Error('连接本机 Chrome 失败');
     const context = browser.contexts()[0];
     page = context.pages()[0] || await context.newPage();
+    await ownDownloads();
     const w = await waitNewWindow(before, x => x.class === 'Chrome_WidgetWin_1' && x.pid === chromeProc.pid)
       || await waitNewWindow(before, x => x.class === 'Chrome_WidgetWin_1');
     if (!w) throw new Error('Chrome 窗口没有出现');
@@ -243,74 +270,212 @@ export async function createBackend(args, emit) {
     return { reload: { x: v.x + Math.round(114 * k), y }, omnibox: { x: v.x + Math.round(440 * k), y } };
   };
 
-  // 上传：文件先放到「下载」下的暂存目录（对话框默认打开这里），点击后在对话框的文件名框里输入文件名回车
-  b.beforeUpload = async absOrList => {
-    for (const abs of [].concat(absOrList)) {
-      const name = path.posix.basename(abs);
-      // /mnt/<盘符> 下的文件直接按盘符路径读，其余经 \\wsl.localhost 读；copyFile 读 WSL 共享会报 EPERM，改为读出再写入
-      const m = abs.match(/^\/mnt\/([a-z])\/(.*)$/);
-      const src = m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`
-        : `\\\\wsl.localhost\\${args.distro}${abs.replace(/\//g, '\\')}`;
-      fs.writeFileSync(path.join(staging, name), fs.readFileSync(src));
-      staged.add(path.join(staging, name));
+  // WSL 路径或 /mnt/<盘符> 路径对应的 Windows 读取路径
+  const winSource = abs => {
+    const m = abs.match(/^\/mnt\/([a-z])\/(.*)$/);
+    return m ? `${m[1].toUpperCase()}:\\${m[2].replace(/\//g, '\\')}`
+      : `\\\\wsl.localhost\\${args.distro}${abs.replace(/\//g, '\\')}`;
+  };
+  // 把文件放进暂存目录（已经在里面的，如刚下载的文件，原样不动），返回暂存目录里的 Windows 路径
+  const stage = abs => {
+    const name = path.posix.basename(abs);
+    const dst = path.join(staging, name);
+    const src = winSource(abs);
+    // copyFile 读 WSL 共享会报 EPERM，改为读出再写入
+    if (path.resolve(src).toLowerCase() !== path.resolve(dst).toLowerCase()) fs.writeFileSync(dst, fs.readFileSync(src));
+    staged.add(dst);
+    return dst;
+  };
+  const waitClosed = async (hwnd, msg) => {
+    for (let i = 0; i < 60; i++) {
+      await sleep(100);
+      if (!(await windows()).some(x => x.hwnd === hwnd)) return;
     }
+    throw new Error(msg);
+  };
+
+  // 上传：文件先放到「下载」下的暂存目录（对话框默认打开这里），点击后在对话框的文件列表里选中
+  b.beforeUpload = async absOrList => {
+    for (const abs of [].concat(absOrList)) stage(abs);
     return new Set((await windows()).map(w => w.hwnd));
   };
   b.chooseFile = async (before, absOrList, human) => {
     const dlg = await waitNewWindow(before, x => x.class === '#32770', 6000);
     if (!dlg) return false;
-    if (Array.isArray(absOrList)) {
-      // 多选：与人一样在「文件名」框里输入带引号的文件名列表（"a.png" "b.png"）后回车；Alt+N 先把焦点放到文件名框
-      const names = absOrList.map(f => path.posix.basename(f));
-      await sleep(rand(600, 1000));
-      const [l, t, r, bt] = dlg.rect;
-      await human.moveTo(l + (r - l) * rand(0.45, 0.65), t + (bt - t) * rand(0.35, 0.55));
-      await sleep(rand(300, 600));
-      await helper.req('key', { combo: 'alt+n', hold: rand(0.05, 0.1) });
-      await sleep(rand(200, 400));
-      emit('upload-multi', { names, via: 'dialog' });
-      await human.type(names.map(n => `"${n}"`).join(' '), 45);
-      await sleep(rand(400, 700));
-      await helper.req('key', { combo: 'return' });
-      for (let i = 0; i < 60; i++) {
-        await sleep(100);
-        if (!(await windows()).some(x => x.hwnd === dlg.hwnd)) break;
-        if (i === 59) throw new Error(`文件对话框没有关闭，可能输入框不支持多选或暂存目录 ${staging} 里缺文件：${names.join(', ')}`);
-      }
-      front = 'browser';
-      return true;
-    }
-    const abs = absOrList;
-    const name = path.posix.basename(abs);
-    // 对话框打开在暂存目录（Chrome 配置里的上次目录）；一边「看」对话框，一边用 UI 自动化找文件在列表里的位置
-    const found = uiaFind(dlg.hwnd, name);
-    await sleep(rand(600, 1000));
-    const [l, t, r, bt] = dlg.rect;
-    await human.moveTo(l + (r - l) * rand(0.45, 0.65), t + (bt - t) * rand(0.35, 0.55));
-    await sleep(rand(300, 600));
-    const pos = await found;
-    if (pos) {
-      // 指针移到文件名上停一下，再双击
-      const [cl, ct, cr, cb] = pos.cell;
-      const x = cl + Math.min(cr - cl, 160) * rand(0.25, 0.7);
-      const y = ct + (cb - ct) * rand(0.35, 0.65);
-      await human.moveTo(x, y);
+    const names = [].concat(absOrList).map(f => path.posix.basename(f));
+    // 对话框弹出后先看一眼文件列表（指针不动，不去对话框正中间绕一圈），同时用 UI 自动化找文件在列表里的位置
+    const found = names.length > 1 ? uiaFindMany(dlg.hwnd, names)
+      : uiaFind(dlg.hwnd, names[0]).then(r => (r ? [{ ...r, name: names[0], found: true }] : null));
+    await sleep(rand(700, 1200));
+    const items = await found;
+    const missing = items ? items.filter(i => !i.found).map(i => i.name) : names;
+    if (!missing.length && items.length === 1) {
+      // 单选：指针直接移到文件名上停一下，再双击
+      await goTo(human, cellPoint(items[0].cell));
       await sleep(rand(250, 550));
       await human.click('left', 2);
+    } else if (!missing.length) {
+      // 多选：与人一样先点第一个，相邻的按住 Shift 点最后一个连选，不相邻的按住 Ctrl 逐个点，再回车打开
+      const sorted = [...items].sort((a, c) => a.index - c.index);
+      const contiguous = sorted.every((it, k) => k === 0 || it.index === sorted[k - 1].index + 1);
+      emit('upload-multi', { names, via: contiguous ? 'shift-click' : 'ctrl-click' });
+      await goTo(human, cellPoint(sorted[0].cell));
+      await sleep(rand(250, 500));
+      await human.click();
+      const mod = contiguous ? 'shift' : 'ctrl';
+      const rest = contiguous ? [sorted[sorted.length - 1]] : sorted.slice(1);
+      await sleep(rand(250, 450));
+      await helper.req('keydown', { combo: mod });
+      try {
+        for (const it of rest) {
+          await sleep(rand(200, 400));
+          await goTo(human, cellPoint(it.cell));
+          await sleep(rand(200, 400));
+          await human.click();
+        }
+        await sleep(rand(150, 300));
+      } finally {
+        await helper.req('keyup', { combo: mod });
+      }
+      await sleep(rand(400, 700));
+      await helper.req('key', { combo: 'return' });
+    } else if (names.length > 1) {
+      // 列表里找不到（如被文件类型筛掉）时退回到在文件名框里输入带引号的文件名列表回车；Alt+N 先把焦点放到文件名框
+      emit('upload-fallback', { names, missing });
+      await helper.req('key', { combo: 'alt+n', hold: rand(0.05, 0.1) });
+      await sleep(rand(200, 400));
+      await human.type(names.map(n => `"${n}"`).join(' '), 90);
+      await sleep(rand(400, 700));
+      await helper.req('key', { combo: 'return' });
     } else {
-      // 找不到列表项时退回到在文件名框里输入文件名回车（文件名框默认有焦点）
-      emit('upload-fallback', { name });
-      await human.type(name, 55);
+      // 单个文件找不到列表项时退回到在文件名框里输入文件名回车（文件名框默认有焦点）
+      emit('upload-fallback', { names, missing });
+      await human.type(names[0], 90);
       await sleep(rand(400, 700));
       await helper.req('key', { combo: 'return' });
     }
-    for (let i = 0; i < 60; i++) {
-      await sleep(100);
-      if (!(await windows()).some(x => x.hwnd === dlg.hwnd)) break;
-      if (i === 59) throw new Error(`文件对话框没有关闭，可能没在暂存目录 ${staging} 里找到 ${name}`);
-    }
+    await waitClosed(dlg.hwnd, `文件对话框没有关闭，可能输入框不支持多选或暂存目录 ${staging} 里缺文件：${names.join(', ')}`);
     front = 'browser';
     return true;
+  };
+
+  // 下载：Playwright 连上 Chrome 后会把下载接管成临时目录里没有扩展名的文件（下载气泡里只显示通用图标），
+  // 这里改回由 Chrome 按原文件名保存到暂存目录，下载气泡与真人下载一样显示文件名和对应格式的图标
+  const downloads = new Map();
+  let cdp = null;
+  async function ownDownloads() {
+    cdp = await browser.newBrowserCDPSession();
+    cdp.on('Browser.downloadWillBegin', e => downloads.set(e.guid, { name: e.suggestedFilename, state: 'inProgress' }));
+    cdp.on('Browser.downloadProgress', e => {
+      const d = downloads.get(e.guid);
+      if (d) d.state = e.state;
+    });
+    await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: staging, eventsEnabled: true });
+  }
+  // trigger 触发下载（点下载按钮）；等下载完成，返回 {name, path（WSL 路径）, winPath}
+  b.download = async (trigger, timeoutSec = 60) => {
+    const known = new Set(downloads.keys());
+    const files0 = new Set(fs.readdirSync(staging));
+    const t0 = Date.now();
+    await trigger();
+    const end = t0 + timeoutSec * 1000;
+    let d = null;
+    while (Date.now() < end) {
+      d = [...downloads.entries()].find(([g]) => !known.has(g))?.[1];
+      if (d && d.state !== 'inProgress') break;
+      await sleep(150);
+    }
+    if (!d) throw new Error('点击后没有开始下载');
+    if (d.state !== 'completed') throw new Error(`下载没有完成（${d.state}）：${d.name}`);
+    // 同名文件已存在时 Chrome 会改名（如 a (1).png）：取这次新出现的文件，没有就按建议文件名
+    let name = d.name;
+    for (let i = 0; i < 20; i++) {
+      const fresh = fs.readdirSync(staging).filter(f => !files0.has(f) && !f.endsWith('.crdownload'));
+      if (fresh.length) { name = fresh.sort((a, c) => fs.statSync(path.join(staging, c)).mtimeMs
+        - fs.statSync(path.join(staging, a)).mtimeMs)[0]; break; }
+      if (fs.existsSync(path.join(staging, name)) && fs.statSync(path.join(staging, name)).mtimeMs >= t0 - 1000) break;
+      await sleep(100);
+    }
+    const winPath = path.join(staging, name);
+    staged.add(winPath);
+    emit('download', { name });
+    return { name, winPath, path: toWsl(winPath) };
+  };
+
+  // 用系统程序打开文件（看下载的图片、文本）：资源管理器里定位到文件，图片双击用系统看图打开，
+  // 文本右键「打开方式 → 记事本」（本机 json、txt 默认程序可能是别的编辑器，不能双击）。
+  // 某一步找不到控件时直接用对应程序打开。返回打开的程序窗口
+  let opened = [];
+  b.openFile = async (abs, human, { app } = {}) => {
+    const winPath = stage(abs);
+    const name = path.basename(winPath);
+    const kind = app || (IMAGE_EXT.test(name) ? 'photos' : 'notepad');
+    const before = new Set((await windows()).map(w => w.hwnd));
+    spawn('explorer.exe', [`/select,"${winPath}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+    const ex = await waitNewWindow(before, x => x.class === 'CabinetWClass', 10000);
+    let viewer = null;
+    const isViewer = x => !before.has(x.hwnd) && x.hwnd !== ex?.hwnd && x.class !== 'CabinetWClass'
+      && !isExe(x, 'chrome.exe') && x.class !== TERM_CLASS && (kind !== 'notepad' || isExe(x, 'notepad.exe'));
+    if (ex) {
+      opened.push(ex.hwnd);
+      await helper.req('foreground', { hwnd: ex.hwnd, maximize: true });
+      front = 'explorer';
+      await sleep(rand(600, 900));
+      const pos = await uiaFind(ex.hwnd, name);
+      if (pos) {
+        await goTo(human, cellPoint(pos.cell));
+        await sleep(rand(300, 600));
+        if (kind === 'photos') {
+          await human.click('left', 2);
+          viewer = await waitNewWindow(before, isViewer, 15000);
+        } else {
+          await human.click('right');
+          const item = await uiaMenu(ex.pid, ['打开方式', 'Open with']);
+          if (item) {
+            await goTo(human, rectCenter(item));
+            await sleep(rand(500, 800));
+            await human.click();
+            const np = await uiaMenu(ex.pid, ['记事本', 'Notepad']);
+            if (np) {
+              await goTo(human, rectCenter(np));
+              await sleep(rand(250, 500));
+              await human.click();
+              viewer = await waitNewWindow(before, isViewer, 15000);
+            }
+          }
+          if (!viewer) { await helper.req('key', { combo: 'Escape' }); await helper.req('key', { combo: 'Escape' }); }
+        }
+      }
+    }
+    if (!viewer) {
+      emit('open-file-fallback', { name, kind });
+      if (kind === 'photos') spawn('explorer.exe', [`"${winPath}"`], { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+      else spawn('notepad.exe', [winPath], { detached: true, stdio: 'ignore' }).unref();
+      viewer = await waitNewWindow(before, isViewer, 15000);
+      // 记事本已经开着时新文件会作为标签页开在原窗口里，没有新窗口
+      if (!viewer && kind === 'notepad') viewer = (await windows()).find(x => isExe(x, 'notepad.exe')) || null;
+      if (!viewer) throw new Error(`没能打开 ${name}`);
+    }
+    opened.push(viewer.hwnd);
+    await helper.req('foreground', { hwnd: viewer.hwnd, maximize: true });
+    front = 'viewer';
+    emit('open-file', { name, kind, exe: viewer.exe });
+    await sleep(rand(500, 800));
+    return true;
+  };
+  b.viewerOpen = () => opened.length > 0;
+  // 关掉打开文件时出现的窗口（先关看图或记事本，再关资源管理器），与人一样按 Alt+F4
+  b.closeFile = async () => {
+    for (const hwnd of opened.reverse()) {
+      if (!(await windows()).some(x => x.hwnd === hwnd)) continue;
+      await helper.req('foreground', { hwnd });
+      await sleep(rand(250, 450));
+      await helper.req('key', { combo: 'alt+f4', hold: rand(0.05, 0.1) });
+      await sleep(rand(400, 700));
+      if ((await windows()).some(x => x.hwnd === hwnd)) await helper.req('close', { hwnd }).catch(() => {});
+    }
+    opened = [];
+    front = '';
   };
 
   // 原生下拉框：Chrome 把展开的选项列表画在一个单独的无标题弹出窗口里。点开前记下已有窗口，
@@ -387,6 +552,7 @@ export async function createBackend(args, emit) {
   // 真人碰了鼠标键盘时回调（其他程序的弹窗、通知照常录，不中止）
   b.onUserInput = cb => helper.onUserInput(cb);
   b.close = async () => {
+    if (opened.length) await b.closeFile().catch(() => {});
     // connectOverCDP 连上的浏览器 close() 只断开连接，要发 Browser.close 才会关掉 Chrome
     if (browser) {
       const s = await browser.newBrowserCDPSession().catch(() => null);
