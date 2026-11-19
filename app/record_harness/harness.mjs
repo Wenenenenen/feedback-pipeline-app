@@ -508,8 +508,8 @@ async function main() {
       await sleep(rand(600, 1000));
       return d;
     },
-    // 用系统程序查看文件（不要在浏览器地址栏里打开）：本机桌面上在资源管理器里定位到文件，图片双击用系统看图打开，
-    // 文本（json、txt、csv 等）右键「打开方式 → 记事本」；file 是 ctx.download 的返回值或文件路径。
+    // 用系统程序查看文件（不要在浏览器地址栏里打开）：本机桌面上与人一样打开资源管理器（下载的文件从下载气泡点
+    // 「在文件夹中显示」，其他文件 Win+E 后粘贴文件夹路径），找到文件双击用默认程序打开；file 是 ctx.download 的返回值或文件路径。
     // 看完调用 ctx.closeFile()，或下一个浏览器操作前自动关掉。试跑（虚拟屏）时在浏览器新标签页里打开
     async openFile(file, opts = {}) {
       const abs = file && typeof file === 'object' ? file.path : path.posix.resolve(args.cwd, String(file));
@@ -590,6 +590,12 @@ async function main() {
       stopWall = Date.now() / 1000;
       await capture.stop();
       emit('record-stop');
+      // 画面采集中途退出：视频不完整，判这次录制失败（流水线会重录），不合成半截视频
+      const died = capture.died?.();
+      if (died && !failed) {
+        failed = new Error(died);
+        emit('error', { message: died });
+      }
     }
     await b.close();
   }

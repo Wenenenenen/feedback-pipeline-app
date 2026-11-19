@@ -429,6 +429,10 @@ def foreground(hwnd: int, maximize: bool = False):
     h = wintypes.HWND(hwnd)
     if user32.IsIconic(h) or maximize:
         user32.ShowWindow(h, 3 if maximize else 9)
+    # 已经在前台就不再按 Alt：单按一下 Alt 会让 Sublime、记事本等程序进入菜单栏选择状态，
+    # 接下来的 Ctrl+W、Ctrl+Shift+P 等组合键都被菜单吃掉
+    if int(user32.GetForegroundWindow() or 0) == hwnd:
+        return True
     _send(_key(0x12), _key(0x12, up=True))
     if not user32.SetForegroundWindow(h):
         fg = user32.GetForegroundWindow()

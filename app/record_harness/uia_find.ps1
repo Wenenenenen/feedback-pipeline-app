@@ -5,7 +5,9 @@
 #   powershell -NoProfile -File uia_find.ps1 -Hwnd <窗口句柄> -Names "a.png|b.json"
 #     一次找多个文件，输出 {"items": [{name, found, index, cell, row}]}，index 是在列表里的顺序（判断是否相邻、能否 Shift 连选）。
 #   powershell -NoProfile -File uia_find.ps1 -Kind menu -ProcId <进程号> -Name "打开方式|Open with"
-#     在该进程的顶层窗口（右键菜单、子菜单）里找名称与其中任一项相同的菜单项，输出 {found, rect}。
+#     在该进程的顶层窗口（右键菜单、子菜单）里找名称与其中任一项相同的菜单项，输出 {found, rect, checked}。
+#   powershell -NoProfile -File uia_find.ps1 -Kind menubar -Hwnd <窗口句柄> -Name "视图|查看|View"
+#     在窗口的菜单栏上找一项，输出 {found, rect}。
 #   powershell -NoProfile -File uia_find.ps1 -Kind dl -Hwnd <Chrome 窗口句柄> -Name <下载的文件名>
 #     找 Chrome 下载气泡里这个文件的一行、它的「在文件夹中显示」按钮和工具栏的下载按钮，输出 {item, folder, toolbar}。
 # 资源管理器隐藏了已知扩展名时，按去掉扩展名的名称再找一次。
@@ -75,10 +77,12 @@ if ($Kind -eq 'dl') {
     exit 0
 }
 
-if ($Kind -eq 'menu') {
+if ($Kind -eq 'menu' -or $Kind -eq 'menubar') {
     # 经典右键菜单（#32768 窗口）在 UI 自动化里是没有子元素的空面板，改用 Win32 菜单接口：
-    # 向菜单窗口发 MN_GETHMENU 取菜单句柄，逐项读文字（去掉 & 助记符）与屏幕矩形。按 Z 序先找最上层的菜单（子菜单）
+    # 向菜单窗口发 MN_GETHMENU 取菜单句柄，逐项读文字（去掉 & 助记符）、屏幕矩形与是否已勾选。按 Z 序先找最上层的菜单（子菜单）
     Add-Type -Namespace FbUia -Name Menu -MemberDefinition @'
+[DllImport("user32.dll")] public static extern IntPtr GetMenu(IntPtr h);
+[DllImport("user32.dll")] public static extern uint GetMenuState(IntPtr m, uint id, uint flags);
 [DllImport("user32.dll")] public static extern IntPtr FindWindowEx(IntPtr p, IntPtr after, string cls, string title);
 [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
 [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr h, uint msg, IntPtr w, IntPtr l);
@@ -95,28 +99,61 @@ if ($Kind -eq 'menu') {
         $s = $s -replace '\(&.\)$', '' -replace '&', '' -replace '(\.\.\.|…)$', ''
         return $s.Trim()
     }
+    # 在一个菜单句柄里找名称相同的项：owner 是菜单栏所属窗口（弹出菜单为 0），返回 {found, name, rect, checked}
+    function Find-InHmenu([IntPtr]$owner, [IntPtr]$hm) {
+        $cnt = [FbUia.Menu]::GetMenuItemCount($hm)
+        for ($i = 0; $i -lt $cnt; $i++) {
+            $sb = New-Object System.Text.StringBuilder 256
+            [void][FbUia.Menu]::GetMenuString($hm, $i, $sb, 256, 0x400)
+            $n = Clean-Name $sb.ToString()
+            foreach ($a in $alts) {
+                if ($n -and $n -eq $a) {
+                    $r = New-Object FbUia.Menu+RECT
+                    if ([FbUia.Menu]::GetMenuItemRect($owner, $hm, $i, [ref]$r) -and $r.Right -gt $r.Left) {
+                        $checked = ([FbUia.Menu]::GetMenuState($hm, $i, 0x400) -band 0x8) -ne 0
+                        return @{ found = $true; name = $n; rect = @($r.Left, $r.Top, $r.Right, $r.Bottom); checked = $checked }
+                    }
+                }
+            }
+        }
+        return $null
+    }
     function Find-Win32Menu {
         $w = [IntPtr]::Zero
         while (($w = [FbUia.Menu]::FindWindowEx([IntPtr]::Zero, $w, '#32768', [NullString]::Value)) -ne [IntPtr]::Zero) {
             if (-not [FbUia.Menu]::IsWindowVisible($w)) { continue }
             $hm = [FbUia.Menu]::SendMessage($w, 0x01E1, [IntPtr]::Zero, [IntPtr]::Zero)
             if ($hm -eq [IntPtr]::Zero) { continue }
-            $cnt = [FbUia.Menu]::GetMenuItemCount($hm)
-            for ($i = 0; $i -lt $cnt; $i++) {
-                $sb = New-Object System.Text.StringBuilder 256
-                [void][FbUia.Menu]::GetMenuString($hm, $i, $sb, 256, 0x400)
-                $n = Clean-Name $sb.ToString()
-                foreach ($a in $alts) {
-                    if ($n -and $n -eq $a) {
-                        $r = New-Object FbUia.Menu+RECT
-                        if ([FbUia.Menu]::GetMenuItemRect([IntPtr]::Zero, $hm, $i, [ref]$r) -and $r.Right -gt $r.Left) {
-                            return @{ found = $true; name = $n; rect = @($r.Left, $r.Top, $r.Right, $r.Bottom) }
-                        }
-                    }
-                }
-            }
+            $hit = Find-InHmenu ([IntPtr]::Zero) $hm
+            if ($hit) { return $hit }
         }
         return $null
+    }
+    # UI 自动化里的菜单项是否已勾选（新版记事本等 WinUI 程序的菜单项带开关状态）
+    function Uia-Checked($m) {
+        try { return $m.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -eq 'On' } catch { return $false }
+    }
+    if ($Kind -eq 'menubar') {
+        # 窗口菜单栏上的一项（如「视图」）：Win32 菜单栏用 GetMenu 读，没有时在窗口的 UI 自动化树里找菜单项；最多等 3 秒
+        $root = $AE::FromHandle([IntPtr]$Hwnd)
+        $mcond = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::MenuItem)
+        for ($t = 0; $t -lt 15; $t++) {
+            $hm = [FbUia.Menu]::GetMenu([IntPtr]$Hwnd)
+            if ($hm -ne [IntPtr]::Zero) {
+                $hit = Find-InHmenu ([IntPtr]$Hwnd) $hm
+                if ($hit) { $hit | ConvertTo-Json -Compress; exit 0 }
+            }
+            foreach ($m in $root.FindAll($Scope::Descendants, $mcond)) {
+                $n = Clean-Name $m.Current.Name
+                if ($alts -contains $n -and -not $m.Current.BoundingRectangle.IsEmpty) {
+                    @{ found = $true; name = $n; rect = (Rect-Of $m) } | ConvertTo-Json -Compress
+                    exit 0
+                }
+            }
+            Start-Sleep -Milliseconds 200
+        }
+        '{"found": false}'
+        exit 0
     }
     # 新式右键菜单（Win11 默认）的菜单项在 UI 自动化里可见：在该进程的顶层窗口里找；两种都最多等 3 秒
     $mcond = New-Object System.Windows.Automation.PropertyCondition($AE::ControlTypeProperty, $CT::MenuItem)
@@ -129,7 +166,7 @@ if ($Kind -eq 'menu') {
                 $n = Clean-Name $m.Current.Name
                 foreach ($a in $alts) {
                     if ($n -and $n -eq $a -and -not $m.Current.BoundingRectangle.IsEmpty) {
-                        @{ found = $true; name = $n; rect = (Rect-Of $m) } | ConvertTo-Json -Compress
+                        @{ found = $true; name = $n; rect = (Rect-Of $m); checked = (Uia-Checked $m) } | ConvertTo-Json -Compress
                         exit 0
                     }
                 }

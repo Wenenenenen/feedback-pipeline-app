@@ -62,6 +62,13 @@ def test_download_and_open_file():
     # 文本与图片都双击用默认程序打开；原来就开着的编辑器窗口（新开标签页）不按 Alt+F4 整个关掉
     assert "kind === 'default'" in win and "w.reused ? 'ctrl+w' : 'alt+f4'" in win
     assert "if (w.reused && !String(now.title || '').includes(w.name)) continue;" in win
+    # 原来开着的编辑器关标签页要核对，关完切回浏览器；单行长文本可让编辑器自动换行
+    assert "combo: 'ctrl+f4'" in win and "emit('close-file'" in win and "if (keptOpen && chromeWin) await b.raise('browser');" in win
+    assert 'async function wrapLines(v, human)' in win and "human.type('word wrap', 110)" in win
+    helper = (HARNESS / 'wininput.py').read_text(encoding='utf-8')
+    fg = helper[helper.index('def foreground('):helper.index('def place(')]
+    # 已在前台时不再单按 Alt（否则编辑器进入菜单栏选择状态，后面的组合键被吃掉）
+    assert fg.index('== hwnd:\n        return True') < fg.index('_send(_key(0x12), _key(0x12, up=True))')
     # 暂存目录里已有相同内容的文件不重写，免得打乱对话框里按日期排的顺序
     assert 'fs.readFileSync(dst).equals(data)' in win
     # 资源管理器不再凭空弹出：下载的文件从下载气泡点「在文件夹中显示」，其他文件 Win+E 后在地址栏粘贴文件夹路径
@@ -73,7 +80,7 @@ def test_download_and_open_file():
     ps = (HARNESS / 'uia_find.ps1').read_text(encoding='utf-8-sig')
     assert "$Kind -eq 'dl'" in ps and 'DownloadBubbleTransparentButton' in ps and '在文件夹中显示 $Name' in ps
     # 经典右键菜单在 UI 自动化里读不到菜单项，改用 Win32 菜单接口；去掉助记符后完全相等才算匹配
-    menu = ps[ps.index("if ($Kind -eq 'menu')"):]
+    menu = ps[ps.index("if ($Kind -eq 'menu' -or $Kind -eq 'menubar')"):]
     assert '0x01E1' in menu and 'GetMenuItemRect' in menu and '$n -eq $a' in menu and 'StartsWith' not in menu
     x11 = (HARNESS / 'backend-x11.mjs').read_text(encoding='utf-8')
     assert 'b.download = async' in x11 and 'b.openFile = async' in x11 and 'b.closeFile = async' in x11
@@ -114,6 +121,10 @@ def test_tail_pad():
 def test_desktop_capture_marks_wallclock_and_mux_pads():
     win = (HARNESS / 'backend-win.mjs').read_text(encoding='utf-8')
     assert 'wallclock: true' in win
+    # 画面采集中途退出时判失败，不合成半截视频
+    assert 'died: () => died' in win and 'stopping = true;' in win
+    h0 = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
+    assert 'const died = capture.died?.();' in h0
     h = (HARNESS / 'harness.mjs').read_text(encoding='utf-8')
     assert 'tpad=stop_mode=clone:stop_duration=' in h and 'stopWall = Date.now() / 1000' in h
 

@@ -95,6 +95,12 @@ async function uiaMenu(pid, alts) {
   return r && r.found ? r.rect : null;
 }
 
+// 同上，但返回整项 {rect, checked}（勾选类菜单项要先看是否已勾选）
+async function uiaMenuItem(pid, alts) {
+  const r = await runUia(['-Kind', 'menu', '-ProcId', String(pid), '-Name', alts.join('|')]);
+  return r && r.found ? r : null;
+}
+
 // 矩形里靠左的随机落点（文件名一格很宽，人一般点在文字上）
 const cellPoint = ([l, t, r, b]) => ({ x: l + Math.min(r - l, 160) * rand(0.25, 0.7), y: t + (b - t) * rand(0.35, 0.65) });
 const rectCenter = ([l, t, r, b]) => ({ x: l + (r - l) * rand(0.35, 0.6), y: t + (b - t) * rand(0.4, 0.6) });
@@ -472,7 +478,39 @@ export async function createBackend(args, emit) {
     emit('reveal', { name, via: 'win+e' });
     return ex;
   }
-  b.openFile = async (abs, human, { app } = {}) => {
+  // 让编辑器自动换行（压缩成一行的 JSON 不换行时只看得到开头）：Sublime 的菜单是自绘的读不到，用命令面板
+  // （Ctrl+Shift+P 打 word wrap 回车）；记事本点菜单「查看 → 自动换行」，已勾选就不点。其他程序不处理
+  async function wrapLines(v, human) {
+    if (isExe(v, 'sublime_text.exe')) {
+      await helper.req('key', { combo: 'ctrl+shift+p', hold: rand(0.05, 0.1) });
+      await sleep(rand(600, 900));
+      await human.type('word wrap', 110);
+      await sleep(rand(700, 1000));
+      await helper.req('key', { combo: 'return' });
+      emit('wrap', { via: 'sublime-palette' });
+      return true;
+    }
+    if (isExe(v, 'notepad.exe')) {
+      const bar = await runUia(['-Kind', 'menubar', '-Hwnd', String(v.hwnd), '-Name', '查看|View']);
+      if (!bar?.found) return false;
+      await goTo(human, rectCenter(bar.rect));
+      await sleep(rand(250, 450));
+      await human.click();
+      const it = await uiaMenuItem(v.pid, ['自动换行', 'Word wrap', 'Word Wrap']);
+      if (!it || it.checked) {
+        await helper.req('key', { combo: 'Escape' });
+        emit('wrap', { via: 'notepad-menu', already: !!it?.checked });
+        return !!it;
+      }
+      await goTo(human, rectCenter(it.rect));
+      await sleep(rand(250, 450));
+      await human.click();
+      emit('wrap', { via: 'notepad-menu' });
+      return true;
+    }
+    return false;
+  }
+  b.openFile = async (abs, human, { app, wrap } = {}) => {
     const winPath = stage(abs);
     const name = path.basename(winPath);
     const kind = app === 'notepad' ? 'notepad' : 'default';
@@ -547,12 +585,17 @@ export async function createBackend(args, emit) {
     front = 'viewer';
     emit('open-file', { name, kind, exe: viewer.exe, reused: viewer.reused });
     await sleep(rand(500, 800));
+    if (wrap) {
+      await wrapLines(viewer, human);
+      await sleep(rand(400, 700));
+    }
     return true;
   };
   b.viewerOpen = () => opened.length > 0;
   // 关掉打开文件时出现的窗口（先关看图或编辑器，再关资源管理器），与人一样按 Alt+F4。
   // 原来就开着的编辑器窗口不能整个关掉：标题里还是这个文件（当前标签页是它）时按 Ctrl+W 只关这个标签页，否则不动
   b.closeFile = async () => {
+    let keptOpen = false;
     for (const w of opened.reverse()) {
       const now = (await windows()).find(x => x.hwnd === w.hwnd);
       if (!now) continue;
@@ -561,10 +604,25 @@ export async function createBackend(args, emit) {
       await sleep(rand(250, 450));
       await helper.req('key', { combo: w.reused ? 'ctrl+w' : 'alt+f4', hold: rand(0.05, 0.1) });
       await sleep(rand(400, 700));
-      if (!w.reused && (await windows()).some(x => x.hwnd === w.hwnd)) await helper.req('close', { hwnd: w.hwnd }).catch(() => {});
+      if (w.reused) {
+        // 原来开着的编辑器：核对标签页确实关了（标题里没有这个文件名），没关上再按一次 Ctrl+F4。
+        // 不关的话录完删掉暂存文件后，编辑器会把它标成已删除未保存，下次关编辑器时弹框
+        let after = (await windows()).find(x => x.hwnd === w.hwnd);
+        if (after && String(after.title || '').includes(w.name)) {
+          await helper.req('foreground', { hwnd: w.hwnd });
+          await sleep(rand(300, 500));
+          await helper.req('key', { combo: 'ctrl+f4', hold: rand(0.05, 0.1) });
+          await sleep(rand(400, 700));
+          after = (await windows()).find(x => x.hwnd === w.hwnd);
+        }
+        emit('close-file', { name: w.name, closed: !(after && String(after.title || '').includes(w.name)) });
+        keptOpen = true;
+      } else if ((await windows()).some(x => x.hwnd === w.hwnd)) await helper.req('close', { hwnd: w.hwnd }).catch(() => {});
     }
     opened = [];
     front = '';
+    // 原来就开着的编辑器关了标签页后还停在前台（画面里会露出它的其他标签页）：与人看完文件一样切回浏览器
+    if (keptOpen && chromeWin) await b.raise('browser');
   };
 
   // 原生下拉框：Chrome 把展开的选项列表画在一个单独的无标题弹出窗口里。点开前记下已有窗口，
@@ -613,6 +671,13 @@ export async function createBackend(args, emit) {
       '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '16', '-pix_fmt', 'yuv420p', files.video],
     { stdio: ['pipe', 'ignore', 'pipe'] });
     video.stderr.on('data', d => emit('ffmpeg', { name: 'video', text: d.toString().slice(0, 300) }));
+    // 画面采集中途退出（如 gfxcapture 报 WGC thread callback timed out）时视频只有前半段：记下来，停止时判这次录制失败
+    const t0 = Date.now();
+    let stopping = false;
+    let died = null;
+    video.on('exit', code => {
+      if (!stopping) died = `画面采集在开录后第 ${((Date.now() - t0) / 1000).toFixed(1)} 秒意外退出（退出码 ${code}），视频不完整`;
+    });
     const quit = p => new Promise(r => {
       if (!p || p.exitCode !== null) { r(); return; }
       p.on('close', r);
@@ -625,7 +690,10 @@ export async function createBackend(args, emit) {
       files,
       // 画面时间戳是墙钟时间（-use_wallclock_as_timestamps），且只在画面变化时出帧，合成时要补结尾静止
       wallclock: true,
+      // 采集是否中途退出：null 为正常，否则是原因
+      died: () => died,
       async stop() {
+        stopping = true;
         await quit(video);
         await quit(audio);
       },
