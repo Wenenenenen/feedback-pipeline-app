@@ -9,6 +9,7 @@
 """
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -54,6 +55,10 @@ class ForbiddenInterrupt(DriverError):
 
 # 轨迹单次静止达到这么久（秒）才计入卡住时长；正常思考、跑命令的停顿多在几分钟内，不计入
 STALL_GAP_SEC = 300
+# 每隔这么久（秒）看一次做题屏幕上的 token 计数，并重新读取卡住上限
+SCREEN_CHECK_SEC = 60
+# 屏幕状态行里这一轮的 token 计数：「↓ 417.1k tokens」
+_TOKENS_RE = re.compile(r'↓\s*([\d.]+)\s*([kKmM]?)\s*tokens')
 
 
 # 已发出 prompt、Claude Code 正在做题的题目 id（调度器据此开始准备下一道题）
@@ -243,13 +248,24 @@ def _sleep(sec: float, stop) -> None:
         raise DriverError('人工停止')
 
 
-def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
+def screen_tokens(screen: str) -> float | None:
+    """做题屏幕上这一轮的 token 计数（如「✽ Cogitating… (3h 9m · ↓ 417.1k tokens)」里的 417100），没有时返回 None。"""
+    found = None
+    for m in _TOKENS_RE.finditer(screen or ''):
+        n = float(m.group(1))
+        unit = (m.group(2) or '').lower()
+        found = n * (1000 if unit == 'k' else 1000000 if unit == 'm' else 1)
+    return found
+
+
+def wait_done(name: str, path: Path, cfg: dict, log, stop, reload=None) -> None:
     """轮询轨迹与屏幕，直到这一轮正常结束。
 
     接口报错中断时抛 ApiErrorInterrupt，轨迹累计静止超过 do_stall_max_min 时抛 StallInterrupt，
     中途出现违规调用（子代理、MCP、非内置 skill）时立即抛 ForbiddenInterrupt，不再空等到做完，
     都由 run_do 决定是否作废重做；
     模型提问、超时都抛错。
+    reload 给出时（如 config.load），每隔 SCREEN_CHECK_SEC 按它重新读取卡住上限。
     """
     deadline = time.time() + int(cfg['do_timeout_min']) * 60
     idle = int(cfg['do_idle_sec'])
@@ -259,6 +275,9 @@ def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
     # 卡住判定：按轨迹记录的时间戳计算推进，相邻两条记录间隔达到 STALL_GAP_SEC 的时长累计起来（含正在进行的这一段）
     stamps, offset = _new_timestamps(path, 0)
     last_ts, stalled = (max(stamps) if stamps else time.time()), 0.0
+    # 模型长时间思考或一次生成很长的回复时，轨迹好几分钟不写入，但屏幕上这一轮的 token 计数在涨：也算推进。
+    # 接口反复重试时计数不动，照样累计静止
+    last_tokens, last_screen = None, 0.0
     while True:
         if stop.is_set():
             raise DriverError('人工停止')
@@ -286,6 +305,17 @@ def wait_done(name: str, path: Path, cfg: dict, log, stop) -> None:
                 if t - last_ts >= STALL_GAP_SEC:
                     stalled += t - last_ts
                 last_ts = max(last_ts, t)
+        if now - last_screen >= SCREEN_CHECK_SEC:
+            last_screen = now
+            tokens = screen_tokens(capture(name))
+            if tokens is not None and last_tokens is not None and tokens != last_tokens:
+                # 计数变了说明模型还在出字：正在进行的这段空档不算静止，从现在起重新计
+                last_ts = max(last_ts, now)
+            if tokens is not None:
+                last_tokens = tokens
+            # 卡住上限按当前配置：夜里调大配置后，正在做的题也按新上限判断
+            if reload:
+                stall_max = int(reload().get('do_stall_max_min') or 0) * 60
         open_gap = now - last_ts
         stall_total = stalled + (open_gap if open_gap >= STALL_GAP_SEC else 0)
         if stall_max and stall_total >= stall_max:
@@ -347,7 +377,7 @@ def _do_once(task_id: int, cfg: dict, log, stop):
         path = wait_session_file(pdir, before, t['user_prompt'], name, log, stop)
         log(f'已发送 会话 {path.stem}')
         _mark_started(task_id, True)
-        wait_done(name, path, cfg, log, stop)
+        wait_done(name, path, cfg, log, stop, reload=config.load)
         log('这一轮已结束')
     except DriverError:
         log('最后的屏幕：\n' + capture(name)[-2000:])

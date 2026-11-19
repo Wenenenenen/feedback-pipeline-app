@@ -896,3 +896,47 @@ def test_parallel_hard_max(client):
     assert autopilot.do_cap() == 14
     config.save({'do_parallel_max': 30})
     assert autopilot.do_cap() == 15
+
+
+def test_screen_tokens():
+    assert claude_driver.screen_tokens('✽ Cogitating… (3h 9m 46s · ↓ 417.1k tokens)\n') == pytest.approx(417100)
+    assert claude_driver.screen_tokens('* Blanching… (1h 10m · ↓ 980 tokens · deep in thought)') == 980
+    assert claude_driver.screen_tokens('✻ Thinking… (↓ 1.2m tokens)') == pytest.approx(1200000)
+    assert claude_driver.screen_tokens('❯ \n bypass permissions on') is None
+
+
+def test_wait_done_long_thinking_not_stall(fake_session, fake_clock, monkeypatch):
+    """轨迹长时间不写入、但屏幕上的 token 计数在涨（长时间思考）时不算卡住；计数不动时照样判卡住。"""
+    p, sent, states = fake_session
+    cfg = _cfg(do_stall_max_min=10, do_timeout_min=100000)
+    calls = [0]
+
+    def quiet(path):
+        calls[0] += 1
+        return 'done' if calls[0] > 200 else 'running'
+    monkeypatch.setattr(trajectory, 'turn_state', quiet)
+    monkeypatch.setattr(claude_driver, 'capture', lambda name: f'✽ Cogitating… (· ↓ {calls[0] / 10:.1f}k tokens)')
+    claude_driver.wait_done('s', p, cfg, lambda m: None, threading.Event())
+    calls[0] = 0
+    monkeypatch.setattr(claude_driver, 'capture', lambda name: '✽ Cogitating… (· ↓ 12.0k tokens)')
+    with pytest.raises(claude_driver.StallInterrupt, match='做题卡住'):
+        claude_driver.wait_done('s', p, cfg, lambda m: None, threading.Event())
+    assert sent == []
+
+
+def test_wait_done_reloads_stall_limit(fake_session, fake_clock, monkeypatch):
+    """给了 reload 时按当前配置的卡住上限判断：会话开始后调大上限，正在做的题也按新上限。"""
+    p, sent, states = fake_session
+    calls = [0]
+
+    def quiet(path):
+        calls[0] += 1
+        return 'done' if calls[0] > 25 else 'running'
+    monkeypatch.setattr(trajectory, 'turn_state', quiet)
+    cfg = _cfg(do_stall_max_min=10, do_timeout_min=100000)
+    # 不重新读取：按开始时的 10 分钟判卡住
+    with pytest.raises(claude_driver.StallInterrupt):
+        claude_driver.wait_done('s', p, cfg, lambda m: None, threading.Event())
+    calls[0] = 0
+    claude_driver.wait_done('s', p, cfg, lambda m: None, threading.Event(),
+                            reload=lambda: {'do_stall_max_min': 1000})
