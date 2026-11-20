@@ -22,7 +22,7 @@ import threading
 import time
 import traceback
 
-from . import claude_driver, config, db, envcheck, jobs, pipeline as P, recorder
+from . import claude_driver, codex_runner, config, db, envcheck, jobs, pipeline as P, recorder
 
 PREP = {P.S_INIT, P.S_ENV}
 BACK = {P.S_COLLECT, P.S_REVIEW, P.S_CHECK, P.S_RECORD}
@@ -43,7 +43,8 @@ def last_run_key(task_id: int) -> str | None:
 
 # 按失败原因匹配的建议：(原因里出现的文字, 建议)，自上而下取所有命中的
 REASON_HINTS = [
-    ('codex 认证失败', '检查 Windows 上 codex 的登录，或 CC Switch 当前供应商的 key 与地址，处理后点「重试」'),
+    ('三方 API', '这次运行用的是三方 API：检查配置页 Codex 里三方的地址、Key、模型与三方余额，处理后点「重试」'),
+    ('codex 认证失败', '检查 Windows 上 codex 的登录（或三方 API 的 Key 与地址），处理后点「重试」'),
     ('额度限流', '等 codex 额度恢复后点「重试」'),
     ('连续重连', '检查网络或代理，确认 codex 能连上供应商后点「重试」'),
     ('轨迹校验不通过', '这次做题的轨迹不能提交：点「重做」作废会话重新做题，自动流程会接着做'),
@@ -445,4 +446,5 @@ def status() -> dict:
         pool=len([t for t in db.list_tasks(P.S_INIT) if not t.get('auto_run')]),
         backlog_max=int(config.load()['auto_backlog_max']),
     )
-    return {'gen': gen_loop.status(), 'do': do}
+    # 附带 codex 当前通道，全自动栏里显示是否在用三方 API
+    return {'gen': gen_loop.status(), 'do': do, 'codex': codex_runner.channel_status()}

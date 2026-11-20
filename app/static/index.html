@@ -18,7 +18,7 @@
     <button data-tab="submission" class="tab">提交表</button>
     <button data-tab="gen" class="tab">批量出题</button>
     <button data-tab="config" class="tab">配置</button>
-    <button id="log-open" class="nav-btn" title="打开运行日志 运行中的任务各占一个标签">日志</button>
+    <button data-tab="logs" class="tab" title="运行日志 打开的运行各占一个标签">日志<span class="tab-badge hidden" id="log-badge"></span></button>
   </nav>
 </header>
 
@@ -69,27 +69,29 @@
 
   <!-- 批量出题 -->
   <section id="tab-gen" class="tab-body hidden">
-    <div class="page">
-      <div class="card" id="pool-card"></div>
-      <form id="gen-form" class="card">
-        <h3>批量出题</h3>
-        <div class="fields">
-          <div class="field"><div class="lab">所属领域<small>固定主领域</small></div>
-            <div class="ctl"><div><span class="domain-lock" id="gen-domain-label"></span></div><input type="hidden" name="domain" id="gen-domain"></div></div>
-          <div class="field"><div class="lab">子方向</div>
-            <div class="ctl"><select name="subdomain" id="gen-sub"><option value="">由 AI 选择</option></select></div></div>
-          <div class="field"><div class="lab">甲方序号<small>决定出题数量 1 到 10 个</small></div>
-            <div class="ctl"><input name="client_seqs" id="gen-seqs" required placeholder="如 12100-12107 或 12100, 12101, 12105">
-              <div class="muted hint" id="gen-seqs-hint">逗号或空格分隔，连续的写成区间；入库的题按顺序分配这些序号</div></div></div>
-          <div class="field"><div class="lab">难度</div>
-            <div class="ctl"><select name="difficulty"><option value="">由 AI 判断</option><option>困难</option><option>地狱</option></select></div></div>
-          <div class="field"><div class="lab">技术栈偏好<small>可选</small></div>
-            <div class="ctl"><input name="stack" placeholder="如 Rust, WebGPU, FFmpeg"></div></div>
-          <div class="field"><div class="lab">补充要求<small>可选</small></div>
-            <div class="ctl"><textarea name="extra" rows="3" placeholder="对题目方向、素材或环境的额外要求"></textarea></div></div>
-          <div class="form-foot"><button class="primary" type="submit">开始出题</button></div>
-        </div>
-      </form>
+    <div class="page page-cols">
+      <div class="page-col">
+        <div class="card" id="pool-card"></div>
+        <form id="gen-form" class="card">
+          <h3>批量出题</h3>
+          <div class="fields">
+            <div class="field"><div class="lab">所属领域<small>固定主领域</small></div>
+              <div class="ctl"><div><span class="domain-lock" id="gen-domain-label"></span></div><input type="hidden" name="domain" id="gen-domain"></div></div>
+            <div class="field"><div class="lab">子方向</div>
+              <div class="ctl"><select name="subdomain" id="gen-sub"><option value="">由 AI 选择</option></select></div></div>
+            <div class="field"><div class="lab">甲方序号<small>决定出题数量 1 到 10 个</small></div>
+              <div class="ctl"><input name="client_seqs" id="gen-seqs" required placeholder="如 12100-12107 或 12100, 12101, 12105">
+                <div class="muted hint" id="gen-seqs-hint">逗号或空格分隔，连续的写成区间；入库的题按顺序分配这些序号</div></div></div>
+            <div class="field"><div class="lab">难度</div>
+              <div class="ctl"><select name="difficulty"><option value="">由 AI 判断</option><option>困难</option><option>地狱</option></select></div></div>
+            <div class="field"><div class="lab">技术栈偏好<small>可选</small></div>
+              <div class="ctl"><input name="stack" placeholder="如 Rust, WebGPU, FFmpeg"></div></div>
+            <div class="field"><div class="lab">补充要求<small>可选</small></div>
+              <div class="ctl"><textarea name="extra" rows="3" placeholder="对题目方向、素材或环境的额外要求"></textarea></div></div>
+            <div class="form-foot"><button class="primary" type="submit">开始出题</button></div>
+          </div>
+        </form>
+      </div>
       <div class="card"><h3>出题运行记录</h3><div id="gen-runs"></div></div>
     </div>
   </section>
@@ -100,14 +102,23 @@
       <form id="config-form" class="card"></form>
     </div>
   </section>
+
+  <!-- 运行日志：左侧最近运行，右侧打开的运行各占一个标签 -->
+  <section id="tab-logs" class="tab-body hidden">
+    <div class="page log-page">
+      <div class="card log-runs">
+        <div class="log-runs-head"><h3>最近运行</h3><span class="spacer"></span><button type="button" id="log-runs-refresh" class="ghost">刷新</button></div>
+        <div id="log-runs"></div>
+      </div>
+      <div id="log-panel">
+        <div class="log-head"><div id="log-tabs" role="tablist"></div><span id="log-status"></span>
+          <button id="log-stop">停止</button><button id="log-close">关闭全部</button></div>
+        <pre id="log-body"><span class="log-empty">点左侧的运行查看日志</span></pre>
+      </div>
+    </div>
+  </section>
 </main>
 
-<!-- 运行日志 -->
-<div id="log-panel" class="hidden">
-  <div class="log-head"><div id="log-tabs" role="tablist"></div><span id="log-status"></span>
-    <button id="log-stop">停止</button><button id="log-close">关闭全部</button></div>
-  <pre id="log-body"></pre>
-</div>
 <div id="toast" class="hidden"></div>
 <script src="app.js"></script>
 </body>

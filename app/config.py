@@ -56,30 +56,69 @@ BUILTIN_SKILLS = [
 # 甲方规定同时运行的 Claude Code 会话不能超过 15 个：自动做题并行数的硬上限，配置页填多大都按这个封顶
 DO_PARALLEL_HARD_MAX = 15
 
-DEFAULTS = {
+# 配置页上的设置项
+SETTINGS = {
+    # ---------- Codex ----------
+    # 通道：auto 官方优先、额度用完时切到三方 API，到报错里的恢复时间后回到官方；official 只用官方；fallback 只用三方 API
+    'codex_channel_mode': 'auto',
+    'model': 'gpt-6.1-sol',
+    'reasoning_effort': 'xhigh',
+    # 生成录屏脚本（qa-record）单独的推理强度：脚本有试跑与自动查验兜底，用较低强度省额度；留空时沿用上面的推理强度
+    'record_reasoning_effort': 'high',
+    # 三方 API 地址（到 /v1 为止，responses 协议）
+    'codex_fallback_base_url': '',
+    # 三方 API key：只保存在 WSL 的 data/config.json，配置接口返回时不带原值
+    'codex_fallback_key': '',
+    # 三方使用的模型名
+    'codex_fallback_model': '',
+    'concurrency': 2,
+    'run_timeout_min': 60,
+    # ---------- 自动出题与自动做题 ----------
+    # 补充题目池每轮出题数量
+    'pool_gen_count': 10,
+    # 自动做题时同时做题的 Claude Code 会话上限
+    'do_parallel_max': 10,
+    # 自动做题时，收集、验收、查验、录屏阶段积压的自动题（不含停下的）达到该数量就暂不取新题
+    'auto_backlog_max': 10,
+    # 单题做题的超时（分钟），超时后关闭会话并判为失败
+    'do_timeout_min': 240,
+    # 做题卡住的判定（分钟）：轨迹单次静止 5 分钟以上的时长累计达到该值，关闭会话按重做处理；0 表示不判定
+    # （实测正常做完的会话累计静止最多 77 分钟，卡住的会话在 2 小时左右越过 90 分钟）
+    'do_stall_max_min': 90,
+    # ---------- 自动录屏 ----------
+    # 自动录屏在 Windows 本机桌面上正式录制（本机 Chrome、Windows Terminal、真实文件对话框）；关闭时在 WSL 虚拟屏录制
+    'record_desktop': True,
+    # 自动录屏是否录制声音（虚拟屏需要 WSL 中安装 pulseaudio，本机桌面需要 Windows 的 pyaudiowpatch）
+    'record_audio': True,
+    # 本机桌面录制前要求的空闲时长（分钟，期间没有鼠标键盘操作且没锁屏）
+    'record_idle_min': 10,
+    # 自动录屏的时长上限（秒）
+    'record_max_sec': 90,
+    # ---------- 提交与飞书 ----------
     # GitHub 仓库（推送使用 WSL 中已配置的 ssh 凭据）
     'github_repo': 'git@github.com:Wenenenenen/feedback-common.git',
+    # 飞书多维表格链接（表头同提交表，另有存甲方序号的 UID 列）；留空时不写入飞书
+    'feishu_url': '',
+    # 题目进入已完成（含返修完成）后自动写入飞书：按 UID 找记录，有则更新、无则新增
+    'feishu_auto_sync': True,
+}
+
+# 代码内固定的项：不在配置页展示，一般不用改（测试或临时排查可在 data/config.json 中覆盖）
+INTERNAL = {
     # Windows 版 codex 可执行文件（WSL 路径）
     'codex_path': '/mnt/e/nodejs/npm-global/node_modules/@openai/codex/node_modules/'
                   '@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe',
     # Codex 工作区（Windows 路径与 WSL 路径），默认为仓库内的 agent/
     'agent_workspace_win': win_path(AGENT_DIR),
     'agent_workspace_wsl': str(AGENT_DIR),
-    'model': 'gpt-6.1-sol',
-    'reasoning_effort': 'xhigh',
-    # 生成录屏脚本（qa-record）单独的推理强度：脚本有试跑与自动查验兜底，用较低强度省额度；留空时沿用上面的推理强度
-    'record_reasoning_effort': 'high',
-    # 沿用 Windows codex 的 config.toml 中的供应商与模型（CC Switch 或第三方 API 时打开）；
-    # 只读取 model、model_provider 和对应的 [model_providers.<名称>]，MCP、插件等仍不加载
-    'codex_follow_toml': False,
-    # config.toml 的 WSL 路径，留空时按 Windows 的 CODEX_HOME 或 %USERPROFILE%\.codex 自动定位
-    'codex_config_toml': '',
     # codex 连续报告重连（Reconnecting...）达到该次数即判定连不上供应商并结束运行，0 表示不限制
     'codex_max_reconnects': 10,
-    'wsl_distro': 'Ubuntu-24.04',
-    'concurrency': 2,
-    'run_timeout_min': 60,
-    'port_base': 20000,
+    # 限流报错里解析不出恢复时间时，多少分钟后再试官方
+    'codex_fallback_retry_min': 60,
+    # 后端运行所在的 WSL 发行版（WSL 会设置 WSL_DISTRO_NAME）
+    'wsl_distro': os.environ.get('WSL_DISTRO_NAME') or 'Ubuntu-24.04',
+    # 验收端口段：每题占 port_span 个端口，从 port_base 起按题目 id 轮转
+    'port_base': 25000,
     'port_span': 100,
     'tasks_root': '~/jianzhi/feedback-tasks',
     'verify_root': '~/jianzhi/feedback-verify',
@@ -92,71 +131,50 @@ DEFAULTS = {
     'upload_dir': '/mnt/e/WorkSpace/jianzhi/feedback-upload',
     # 准备环境时自动确认显卡能力（依赖显卡的题不再停在待准备环境等人工确认，环境检查明细里注明已自动确认）
     'gpu_auto_confirm': True,
-    # ---------- 自动出题与自动做题 ----------
-    # 补充题目池每轮出题数量
-    'pool_gen_count': 10,
-    # 自动做题时，收集、验收、查验、录屏阶段积压的自动题（不含停下的）达到该数量就暂不取新题
-    'auto_backlog_max': 10,
-    # 自动做题时同时做题的 Claude Code 会话上限
-    'do_parallel_max': 10,
     # 等待 Claude Code 启动到可输入状态的上限（秒）
     'do_ready_timeout_sec': 180,
-    # 单题做题的超时（分钟），超时后关闭会话并判为失败
-    'do_timeout_min': 240,
     # 轨迹记录到本轮结束后，会话文件再静止这么多秒才算做完
     'do_idle_sec': 30,
-    # 做题卡住的判定（分钟）：轨迹单次静止 5 分钟以上的时长累计达到该值，关闭会话按重做处理；0 表示不判定
-    # （实测正常做完的会话累计静止最多 77 分钟，卡住的会话在 2 小时左右越过 90 分钟）
-    'do_stall_max_min': 90,
     # 做题时接口报错中断（如 504、529）或卡住，自动作废会话重做的次数上限（两种情况共用），0 表示不自动重做、直接停下
     # （报错会在轨迹里留下 model 为 <synthetic> 的占位消息，甲方质检判不通过，不能输入「继续」）
     'do_api_error_redo_max': 3,
     # 接口报错后等待多少秒再重新做题
     'do_api_error_wait_sec': 60,
-    # 自动录屏的时长上限（秒）
-    'record_max_sec': 90,
-    # 自动录屏是否录制声音（虚拟屏需要 WSL 中安装 pulseaudio，本机桌面需要 Windows 的 pyaudiowpatch）
-    'record_audio': True,
-    # 自动录屏在 Windows 本机桌面上正式录制（本机 Chrome、Windows Terminal、真实文件对话框）；关闭时在 WSL 虚拟屏录制
-    'record_desktop': True,
-    # 本机桌面录制前要求的空闲时长（分钟，期间没有鼠标键盘操作且没锁屏）
-    'record_idle_min': 10,
     # 本机桌面录制被人操作电脑打断后最多重录几次
     'record_user_retries': 3,
-    # ---------- 飞书多维表格 ----------
-    # 飞书多维表格链接（表头同提交表，另有存甲方序号的 UID 列）；留空时不写入飞书
-    'feishu_url': '',
-    # 题目进入已完成（含返修完成）后自动写入飞书：按 UID 找记录，有则更新、无则新增
-    'feishu_auto_sync': True,
 }
+
+DEFAULTS = {**INTERNAL, **SETTINGS}
+# codex 通道的取值
+CHANNEL_MODES = ('auto', 'official', 'fallback')
 
 _lock = threading.Lock()
 
 
-def load() -> dict:
-    """读取配置，缺省项用默认值补齐。"""
-    cfg = dict(DEFAULTS)
+def _read_saved() -> dict:
     if CONFIG_FILE.exists():
         try:
-            cfg.update(json.loads(CONFIG_FILE.read_text(encoding='utf-8')))
+            return json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
         except (OSError, ValueError):
             pass
+    return {}
+
+
+def load() -> dict:
+    """读取配置，缺省项用默认值补齐；已废弃的旧配置项忽略。"""
+    cfg = dict(DEFAULTS)
+    cfg.update({k: v for k, v in _read_saved().items() if k in DEFAULTS})
     return cfg
 
 
 def save(updates: dict) -> dict:
     """只保存已知配置项，返回合并后的配置。"""
     with _lock:
-        # 只落盘用户改过的项，未改的项继续跟随代码默认值（如内置 skill 清单随版本更新）
-        saved = {}
-        if CONFIG_FILE.exists():
-            try:
-                saved = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                saved = {}
-        for k, v in updates.items():
-            if k in DEFAULTS:
-                saved[k] = v
+        # 只落盘用户改过的项，未改的项继续跟随代码默认值（如内置 skill 清单随版本更新）；
+        # 与默认值相同的项和已废弃的旧配置项一并清掉
+        saved = _read_saved()
+        saved.update({k: v for k, v in updates.items() if k in DEFAULTS})
+        saved = {k: v for k, v in saved.items() if k in DEFAULTS and v != DEFAULTS[k]}
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         CONFIG_FILE.write_text(json.dumps(saved, ensure_ascii=False, indent=2), encoding='utf-8')
         return load()

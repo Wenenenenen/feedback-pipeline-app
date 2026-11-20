@@ -1,40 +1,48 @@
 #!/usr/bin/env bash
-# 新环境冒烟：确认 WSL 能调起 Windows 版 codex、codex 认证有效（ChatGPT 登录或 config.toml 中的供应商）、
+# 新环境冒烟：确认 WSL 能调起 Windows 版 codex、codex 认证有效（ChatGPT 登录）、
 # agent/ 下的 skill 能被发现、按 schema 输出、codex 能回调 wsl.exe 执行命令、能用 \\wsl.localhost 路径读 WSL 文件。
 # 用法（在 WSL 中，先启动过一次 start.sh 以创建虚拟环境）：bash scripts/smoke-codex.sh
+#   加 --fallback 时改用配置页 Codex 里三方 API 的地址、Key 与模型（与正式运行共用 codex_runner.fallback_args）
 # 只做一次低推理强度调用；临时 skill 与 schema 跑完即删除，不影响正式运行。
 set -uo pipefail
 
+SMOKE_FALLBACK=""
+[ "${1:-}" = "--fallback" ] && SMOKE_FALLBACK=1
+export SMOKE_FALLBACK
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME="${PIPELINE_HOME:-$HOME/jianzhi/feedback-pipeline}"
 PY="$RUNTIME/.venv/bin/python"
 [ -x "$PY" ] || { echo "未找到 $PY，请先运行一次 scripts/start.sh" >&2; exit 1; }
 
-# 读取流水线配置（页面「配置」中保存的值优先）；模型与供应商参数与正式运行共用 codex_runner.model_args
+# 读取流水线配置（页面「配置」中保存的值优先）；模型与供应商参数与正式运行共用 codex_runner.channel_args
 VARS="$(cd "$APP_DIR" && PIPELINE_DATA="$RUNTIME/data" "$PY" - <<'PY'
+import os
 import shlex
 import sys
 from app import codex_runner, config
 c = config.load()
 for k in ('codex_path', 'wsl_distro', 'agent_workspace_win', 'agent_workspace_wsl'):
     print(f'{k.upper()}={shlex.quote(str(c[k]))}')
-try:
-    args = codex_runner.model_args(c)
-except codex_runner.CodexError as e:
-    print(f'读取模型与供应商失败：{e}', file=sys.stderr)
-    sys.exit(1)
+if os.environ.get('SMOKE_FALLBACK'):
+    if not codex_runner.fallback_ready(c):
+        print('配置页 Codex 里三方 API 的地址、Key、模型没有填完整', file=sys.stderr)
+        sys.exit(1)
+    env = codex_runner.fallback_env(c)
+    # key 只经环境变量交给 Windows 的 codex
+    for k in (codex_runner.FALLBACK_KEY_ENV, 'WSLENV'):
+        print(f'export {k}={shlex.quote(env[k])}')
+    print(f"FALLBACK_URL={shlex.quote(c['codex_fallback_base_url'].strip())}")
+args = codex_runner.channel_args(c, 'fallback' if os.environ.get('SMOKE_FALLBACK') else 'official')
 print('MODEL_ARGS=(' + ' '.join(shlex.quote(a) for a in args) + ')')
 print(f"MODEL={shlex.quote(args[1])}")
-# 展示用的参数，键名像密钥的值已打码
-print(f"SHOW_ARGS={shlex.quote(' '.join(codex_runner.mask_args(args)))}")
-if c.get('codex_follow_toml'):
-    print(f"TOML_PATH={shlex.quote(str(codex_runner.toml_path(c)))}")
+print(f"SHOW_ARGS={shlex.quote(' '.join(args))}")
 PY
 )" || exit 1
-TOML_PATH=""
+FALLBACK_URL=""
 eval "$VARS"
+[ -n "$FALLBACK_URL" ] && echo "使用三方 API $FALLBACK_URL"
 
-[ -f "$CODEX_PATH" ] || { echo "codex 不存在：$CODEX_PATH（在页面「配置」里改 codex 可执行文件路径）" >&2; exit 1; }
+[ -f "$CODEX_PATH" ] || { echo "codex 不存在：$CODEX_PATH（默认值在 app/config.py 的 codex_path，可在 data/config.json 中覆盖）" >&2; exit 1; }
 
 A="$AGENT_WORKSPACE_WSL"
 W="${AGENT_WORKSPACE_WIN%\\}"
@@ -52,7 +60,6 @@ INPUT="问候 冒烟输入 你好 pipeline
 探测命令 wsl.exe -d $WSL_DISTRO --cd ~ -- bash -ic 'node -v'
 探测文件 $PROBE_UNC"
 
-[ -n "$TOML_PATH" ] && echo "沿用 $TOML_PATH 的供应商与模型"
 echo "模型与供应商参数：$SHOW_ARGS"
 echo "调用 codex（模型 $MODEL，推理强度 low），通常需要 1 到 3 分钟"
 echo "$INPUT" | timeout 600 "$CODEX_PATH" exec --json --ephemeral --ignore-user-config \

@@ -10,7 +10,7 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import autopilot, claude_driver, config, db, feishu, jobs, pipeline as P, submission
+from . import autopilot, claude_driver, codex_runner, config, db, feishu, jobs, pipeline as P, submission
 
 @asynccontextmanager
 async def lifespan(_app):
@@ -64,13 +64,38 @@ def meta():
     return {'statuses': P.STATUSES, 'domains': P.DOMAINS, 'repro_levels': P.REPRO_LEVELS}
 
 
+def _public_config(cfg: dict) -> dict:
+    """返回给页面的配置：三方 API key 不带原值，只告知是否已填写。"""
+    out = dict(cfg)
+    out['codex_fallback_key_set'] = bool(str(out.get('codex_fallback_key') or '').strip())
+    out['codex_fallback_key'] = ''
+    return out
+
+
 @app.get('/api/config')
 def get_config():
-    return config.load()
+    return _public_config(config.load())
+
+
+@app.get('/api/codex/channel')
+def codex_channel():
+    return codex_runner.channel_status()
+
+
+@app.post('/api/codex/channel/reset')
+def codex_channel_reset():
+    """立即切回官方：清除官方额度用完的记录，之后的新运行先走官方。"""
+    codex_runner.reset_channel()
+    return codex_runner.channel_status()
 
 
 @app.put('/api/config')
 def put_config(body: dict = Body(...)):
+    # 页面不回显 key，留空表示不修改
+    if not str(body.get('codex_fallback_key') or '').strip():
+        body.pop('codex_fallback_key', None)
+    if 'codex_channel_mode' in body and body['codex_channel_mode'] not in config.CHANNEL_MODES:
+        raise HTTPException(400, 'Codex 通道只能是 auto、official、fallback')
     if 'do_parallel_max' in body:
         try:
             n = int(body['do_parallel_max'])
@@ -79,7 +104,7 @@ def put_config(body: dict = Body(...)):
         if not 1 <= n <= config.DO_PARALLEL_HARD_MAX:
             raise HTTPException(400, f'自动做题并行数只能在 1 到 {config.DO_PARALLEL_HARD_MAX} 之间'
                                      '（甲方规定 Claude Code 同时不能超过 15 个）')
-    return config.save(body)
+    return _public_config(config.save(body))
 
 
 # ---------- 题目 ----------

@@ -61,7 +61,7 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 - 输出：`--output-schema` 约束最终回复为 JSON，后端校验后写入 SQLite。skill 不直接读写数据库，pipectl 取消。
 - 日志：`--json` 事件流逐行推送到页面并存 `data/logs/`。
 - `--ignore-user-config` 跳过 config.toml 中的 MCP、插件、默认模型；模型与推理强度由配置页提供（默认 `gpt-6.1-sol` / `xhigh`）。
-- 配置 `codex_follow_toml` 打开时（CC Switch 或第三方 API 的环境），`codex_runner.model_args` 读取 `codex_config_toml`（留空时用 powershell.exe 取 Windows 的 `CODEX_HOME` 或 `%USERPROFILE%\.codex`，经 `config.wsl_path` 转换，进程内缓存）：`-m` 取 `model`，`model_provider` 与 `[model_providers.<名称>]` 逐项转成 `-c`；`build_cmd` 与 `scripts/smoke-codex.sh` 共用该函数。
+- Codex 通道 `codex_channel_mode`（`auto` 官方优先额度用完切三方、`official`、`fallback`）与三方 API（`codex_fallback_base_url`、`codex_fallback_key`、`codex_fallback_model`，`codex_fallback_retry_min` 为固定项）：`codex_runner.channel_args` 按通道生成 `-m`、`-c`（官方只传 `-m`），`build_cmd` 与 `scripts/smoke-codex.sh` 共用。`run_skill` 先取 `channel_status`（只用三方时走三方，三方没填完整启动前报错；`auto` 时 `data/codex_channel.json` 的 `official_blocked_until` 未到且 `fallback_ready` 走三方）；`auto` 下官方 `_exec` 因限流抛 `RateLimitError` 时 `mark_official_blocked`（`parse_reset_time` 解析恢复时间加 1 分钟，解析不出按默认时长，已有更晚时间时保留）后当场用三方重跑；三方失败原因加「三方 API：」前缀，不再切换。三方参数由 `fallback_args` 生成（供应商 `feedback_fallback`，responses，`env_key = FEEDBACK_CODEX_FALLBACK_KEY`），`fallback_env` 把 Key 放进环境变量并追加到 `WSLENV`。接口：`GET /api/codex/channel`、`POST /api/codex/channel/reset`；`autopilot.status()` 带 `codex`；配置接口返回时 Key 置空并给 `codex_fallback_key_set`，保存时空 Key 不覆盖。冒烟 `scripts/smoke-codex.sh --fallback`。
 - `--ephemeral` 不落会话文件，流水线会话不会出现在 Codex 客户端历史中。
 - 全局 `~/.codex/AGENTS.md` 仍会加载；工作区 `AGENTS.md` 写明「自动化流水线，只按 schema 输出 JSON，不加称呼」，口吻检查兜底。
 
@@ -70,7 +70,8 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 - 只使用 Windows 默认 CODEX_HOME，与客户端共用同一 `auth.json`，由 Codex 自身的锁协调刷新。
 - 禁止复制 `auth.json`；禁止在 WSL 中运行 Linux 版 codex 并把 CODEX_HOME 指向 `/mnt/c/.../.codex`。
 - 并发默认 2，避免触发 ChatGPT 订阅限流。
-- 沿用 config.toml 时只读该文件，key 仍由 codex 从 `auth.json` 取（CC Switch 写入），流水线不读 `auth.json`。
+- 流水线不读 `auth.json` 与 `config.toml`；三方 Key 只在 `data/config.json`，经环境变量传给 codex。
+- 配置项分 `config.SETTINGS`（配置页）与 `config.INTERNAL`（代码内固定，`data/config.json` 可覆盖，仅用于测试或临时排查）；`load` 忽略已废弃的旧项，`save` 只落盘与默认值不同的已知项。配置页按 `CONFIG_GROUPS` 分 Codex、自动做题、自动录屏、提交与飞书四个标签，两列网格。
 
 ### 4. 验收执行
 
@@ -209,3 +210,6 @@ skill 不放 `~/.codex/skills`、`~/.agents/skills`，避免进入日常 Codex �
 - 2026-11-20 上午：语言/框架规整表里 canvas2d 改写成 `Canvas2D`（原为 `Canvas 2D`），qa-review 示例同步；已完成的 24 道题经接口重存并写入飞书。返修复盘：13583、13584、14047 三道的质检都指过程问题没有与产物分开、不能独立核验（只在产物缺陷前挂一句「模型的某测试只验了某项」，没有轨迹位置、实际命令与返回、缺的断言以及与最终缺陷的关系），返修补上轨迹行号与运行输出后过。`style.md` 新增「过程问题怎么写」（位置、动作与返回、缺口、关系四项，过程与产物各自成立）并加进「一定会被打回的写法」，3 分、2 分示例补上轨迹行号与返回；qa-review 第 2 步要求实测找到问题后回完整轨迹检索对应那次验证的行号、命令、输出和缺失断言，第 6 步与 `self_check.has_process` 同步；qa-rework 补遇到这类质检时的改法。示例过后端规则检查，176 个测试通过。
 - 2026-11-20 下午：返修复盘补两类。12711 首轮质检指过程问题只是模型的判断（判断成缺中文字体就没再处理），没有可定位的命令、截图或回复；14047 第二轮在已有轨迹行号的情况下，又因过程与产物从轨迹行号一路连到给分、没有边界，也没交代测试覆盖与遗漏的范围被打回。`style.md`「过程问题怎么写」加：过程部分以「过程上」起头、产物部分以「产物上」起头标出边界，缺口先写覆盖了什么再写漏了什么，关系句不能省；模型的判断或误诊要落到对应工具调用的轨迹行，定位不到不写；「一定会被打回的写法」加两条，3 分、2 分示例加引导词。qa-review 第 6 步与 `self_check.has_process`、qa-rework 同步。两题不再返修。示例过后端规则检查，176 个测试通过。
 - 2026-11-20 下午（二）：Feedback 放开四种简单中文标点：逗号、句号、顿号、分号（，。、；），其余中文标点与全部英文标点仍不允许，短句也可继续用空格断句。`style_check` 加 `FEEDBACK_PUNCT_OK`，中文标点检查跳过这四种，英文片段与两侧空格的判断把它们当作片段边界（`src/a.py:82，` 不会误判词尾冒号）。`style.md` 的标点规则、过程与产物的边界（「过程上」「产物上」起头，中间用句号分开）和三个示例改为带标点的写法，设计文档第 6 节同步。补测试，176 个测试通过，示例过后端规则检查；后端已重启生效。
+- 2026-11-20 晚：新增三方备用。官方额度限流时按报错里的恢复时间切到三方（当场重跑这次运行），到点后新运行回到官方；配置页加三方地址、Key（不回显）、模型、默认时长与通道状态、立即切回官方，全自动栏显示当前通道；冒烟脚本加 `--fallback`。新增 `tests/test_codex_fallback.py`，183 个测试通过。实测（三方中转，模型 `gpt-6.2-sol`）：`smoke-codex.sh --fallback` 通过，Key 经 `WSLENV` 传到 Windows codex；临时数据目录下模拟官方限流，真实 codex 在三方上以 xhigh 跑完 smoke-echo，恢复时间解析正确，第二次运行直接走三方；两次冒烟共花费约 0.07 美元。三方运行时 stderr 会出现连不上 `chatgpt.com/backend-api/ps/mcp` 的 rmcp 报错，不影响结果。
+- 2026-11-20 晚（二）：配置规整。去掉沿用 config.toml（`codex_follow_toml`、`codex_config_toml`、`toml_path`、`mask_args` 及其测试），与三方合并为通道下拉（官方优先额度用完切三方、只用官方、只用三方）；配置项分 `SETTINGS`（页面 21 项）与 `INTERNAL`（codex 路径、工作区、WSL 发行版改取 `WSL_DISTRO_NAME`、端口段默认改为 25000、各目录、重连上限、三方默认时长、显卡自动确认、就绪等待、静止时长、接口报错重做与等待、桌面录制重录次数）；`load` 忽略旧项，`save` 只存与默认值不同的项；配置页改为四个标签加两列网格，推理强度改下拉，只用官方时收起三方三项。183 个测试通过。
+- 2026-11-20 晚（三）：运行日志由底部抽屉改为独立的日志页（左侧最近运行、右侧标签与日志，导航显示运行中个数；详情与出题记录里的「日志」跳到日志页，题目操作、出题、写入飞书的后台运行只加标签不跳转），去掉 `--log-h` 让高逻辑；五个页面统一 `--page-max: 1680px` 居中，批量出题改左右两栏，配置页宽屏三列，出题运行记录列宽改固定值。

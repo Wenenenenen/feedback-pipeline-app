@@ -175,7 +175,7 @@ def remap_excluded_ports(task_id: int, log, rngs: list[tuple[int, int]] | None =
         new = next(free, None)
         if new is None:
             raise RecordError(f'录屏用的端口 {old} 在 Windows 保留端口段里，本题端口段 {p0}-{p1} 也没有可用端口，'
-                              '调整配置里的 port_base 后重试')
+                              '在 data/config.json 中覆盖 port_base（默认值在 app/config.py）后重试')
         mapping[old] = new
     key_ok = cache.get('key') == script_key(t)
     fields = {'record_prep': prep, 'record_steps': t.get('record_steps')}

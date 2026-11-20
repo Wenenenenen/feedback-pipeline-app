@@ -296,80 +296,10 @@ def test_build_cmd():
     cmd = codex_runner.build_cmd(cfg, 'qa-review', 'run1')
     assert '--ephemeral' in cmd and '--ignore-user-config' in cmd and cmd[-1] == '$qa-review'
     assert cmd[cmd.index('-o') + 1].endswith('\\runs\\run1\\result.json')
-    # 默认不跟随 config.toml：模型参数与原来一致，紧跟推理强度
+    # 官方通道：只传配置页的模型名，紧跟推理强度
     i = cmd.index('-m')
     assert cmd[i:i + 4] == ['-m', cfg['model'], '-c', f'model_reasoning_effort="{cfg["reasoning_effort"]}"']
     assert sum(1 for c in cmd if c == '-c') == 1
-
-
-CC_SWITCH_TOML = '''
-model_provider = "relay"
-model = "gpt-relay-1"
-model_reasoning_effort = "high"
-
-[model_providers.relay]
-name = "Relay \\"中转\\""
-base_url = "https://relay.example.com/v1"
-wire_api = "responses"
-requires_openai_auth = true
-request_max_retries = 4
-experimental_bearer_token = "sk-secret"
-
-[model_providers.relay.http_headers]
-X-Org = "team"
-
-[mcp_servers.fetch]
-command = "uvx"
-'''
-
-
-def _follow_cfg(tmp_path, text):
-    p = tmp_path / 'config.toml'
-    p.write_text(text, encoding='utf-8')
-    return dict(config.DEFAULTS, codex_follow_toml=True, codex_config_toml=str(p))
-
-
-def test_model_args_follow_toml(tmp_path):
-    import tomllib
-    args = codex_runner.model_args(_follow_cfg(tmp_path, CC_SWITCH_TOML))
-    assert args[:2] == ['-m', 'gpt-relay-1']
-    pairs = [args[i + 1] for i in range(2, len(args), 2)]
-    assert all(args[i] == '-c' for i in range(2, len(args), 2))
-    assert pairs[0] == 'model_provider="relay"'
-    kv = dict(p.split('=', 1) for p in pairs)
-    # 每个值都能被当成 TOML 字面量解析回原值
-    back = {k: tomllib.loads(f'v = {v}')['v'] for k, v in kv.items()}
-    assert back['model_providers.relay.name'] == 'Relay "中转"'
-    assert back['model_providers.relay.base_url'] == 'https://relay.example.com/v1'
-    assert back['model_providers.relay.requires_openai_auth'] is True
-    assert back['model_providers.relay.request_max_retries'] == 4
-    assert back['model_providers.relay.http_headers.X-Org'] == 'team'
-    # 只透传供应商与模型，MCP 与推理强度不透传
-    assert not any(k.startswith('mcp_servers') or 'reasoning' in k for k in kv)
-    # 日志里密钥打码
-    masked = codex_runner.mask_args(args)
-    assert 'model_providers.relay.experimental_bearer_token=***' in masked
-    assert 'model_providers.relay.base_url="https://relay.example.com/v1"' in masked
-    # build_cmd 用同一组参数，推理强度仍来自配置页
-    cmd = codex_runner.build_cmd(_follow_cfg(tmp_path, CC_SWITCH_TOML), 'qa-gen', 'r1')
-    assert cmd[cmd.index('-m') + 1] == 'gpt-relay-1'
-    assert 'model_reasoning_effort="xhigh"' in cmd
-
-
-def test_model_args_follow_toml_edge_cases(tmp_path):
-    # 未指定供应商（ChatGPT 官方登录）：只传模型；没有 model 时用配置页的模型名
-    assert codex_runner.model_args(_follow_cfg(tmp_path, 'model = "m1"\n')) == ['-m', 'm1']
-    assert codex_runner.model_args(_follow_cfg(tmp_path, '')) == ['-m', config.DEFAULTS['model']]
-    # 内置供应商不需要 provider 表
-    assert codex_runner.model_args(_follow_cfg(tmp_path, 'model_provider = "openai"\n'))[2:] == \
-        ['-c', 'model_provider="openai"']
-    with pytest.raises(codex_runner.CodexError, match='找不到'):
-        codex_runner.model_args(_follow_cfg(tmp_path, 'model_provider = "relay"\n'))
-    with pytest.raises(codex_runner.CodexError, match='TOML'):
-        codex_runner.model_args(_follow_cfg(tmp_path, 'model = \n'))
-    cfg = dict(config.DEFAULTS, codex_follow_toml=True, codex_config_toml=str(tmp_path / 'missing.toml'))
-    with pytest.raises(codex_runner.CodexError, match='读取'):
-        codex_runner.model_args(cfg)
 
 
 def test_wsl_path():
@@ -618,7 +548,7 @@ def test_static_no_cache(client):
     """页面资源要求浏览器每次确认更新，避免改了样式还用旧缓存。"""
     r = client.get('/style.css')
     assert r.status_code == 200 and r.headers['cache-control'] == 'no-cache'
-    assert 'max-height: calc(100vh - var(--header-h)' in r.text
+    assert 'max-height: var(--page-h)' in r.text
 
 
 def test_record_issues(client):

@@ -207,6 +207,7 @@ function showTab(name) {
   document.querySelectorAll('.tab-body').forEach(x => x.classList.toggle('hidden', x.id !== 'tab-' + name));
   if (name === 'gen') loadGenRuns();
   if (name === 'config') loadConfig();
+  if (name === 'logs') run(enterLogs);
   // 提交表每次切进来都按当前范围重新读取
   if (name === 'submission') run(loadSubmission);
 }
@@ -484,7 +485,8 @@ async function loadSubmission() {
 // 后台写入飞书并打开运行日志，运行结束后刷新提交表页的飞书标记
 async function syncFeishu(ids, title) {
   const r = await api('/api/feishu/sync', { method: 'POST', body: { ids } });
-  openLog(r.run_key, title);
+  openLog(r.run_key, title, false);
+  toast('已开始写入飞书 运行日志在日志页');
   const timer = setInterval(async () => {
     const tab = logTabs.get(r.run_key);
     // 日志标签被关掉时停止等待
@@ -879,7 +881,8 @@ async function doAction(t, act, idx) {
     if (!confirm(`确认录屏文件：\n${body.recording_link}`)) return;
   }
   const r = await api(`/api/tasks/${id}/action/${act}`, { method: 'POST', body });
-  if (r.run_key) openLog(r.run_key, `${t.branch} ${act}`);
+  // 后台运行不跳走：在日志页加一个标签，跑完时刷新列表与详情
+  if (r.run_key) { openLog(r.run_key, `${t.branch} ${act}`, false); toast('已开始 运行日志在日志页'); }
   else toast(act === 'auto_retry' ? '已重试 自动做题会接着推进' : '完成');
   await loadList();
   await showTask(id);
@@ -917,17 +920,54 @@ async function saveReview(id) {
 }
 
 // ---------- 运行日志 ----------
-function openLog(runKey, title) {
-  // 已打开的运行直接切过去，不重读内容；新运行追加一个标签
+function openLog(runKey, title, focus = true) {
+  // 已打开的运行直接切过去，不重读内容；新运行追加一个标签；focus 为 false 时只在后台加标签，不跳到日志页
   if (!logTabs.has(runKey)) logTabs.set(runKey, { title, offset: 0, text: '', status: 'running', error: '' });
-  logRun = runKey;
-  $('#log-panel').classList.remove('hidden');
-  // 日志抽屉打开时给两侧面板让出高度
-  document.body.classList.add('log-open');
+  if (focus || !logRun) logRun = runKey;
   renderLogTabs();
-  showLogBody(true);
+  if (focus || logRun === runKey) showLogBody(true);
   pollLogs();
   if (!logTimer) logTimer = setInterval(pollLogs, 1500);
+  if (focus && $('#tab-logs').classList.contains('hidden')) showTab('logs');
+}
+
+// 进入日志页：刷新最近运行；还没有打开的标签时，运行中的都补成标签，没有运行中的就打开最近一次
+async function enterLogs() {
+  const runs = await loadLogRuns();
+  if (!logTabs.size) {
+    runs.filter(r => r.status === 'running').reverse().forEach(r => openLog(r.run_key, r.title, false));
+    if (!logTabs.size && runs[0]) openLog(runs[0].run_key, runs[0].title, false);
+  }
+  showLogBody(true);
+}
+
+// 最近运行列表：题目运行显示分支名，出题与写入飞书等没有题目的运行显示类别
+async function loadLogRuns() {
+  const [runs, tasks] = await Promise.all([api('/api/runs'), api('/api/tasks')]);
+  const branch = Object.fromEntries(tasks.map(t => [t.id, t.branch]));
+  // 标签名带上开始时间，同类运行（如多次出题）也能分清
+  runs.forEach(r => {
+    r.name = `${r.task_id ? branch[r.task_id] || '#' + r.task_id : '批量'} ${r.kind}`;
+    r.title = `${r.name} ${(r.started_at || '').slice(11, 16)}`;
+  });
+  $('#log-runs').innerHTML = runs.length ? `<ul class="run-list">${runs.map(r => `
+    <li class="${r.run_key === logRun ? 'active' : ''} ${logTabs.has(r.run_key) ? 'opened' : ''}" data-run="${esc(r.run_key)}" data-title="${esc(r.title)}" title="${esc(r.error || r.run_key)}">
+      <i class="dot ${esc(r.status)}"></i>
+      <span class="rl-title">${esc(r.name)}</span>
+      <span class="rl-time">${esc((r.started_at || '').slice(5, 16))}</span></li>`).join('')}</ul>` : '<div class="muted">还没有运行记录</div>';
+  $('#log-runs').querySelectorAll('[data-run]').forEach(li => li.onclick = () => {
+    openLog(li.dataset.run, li.dataset.title);
+    markLogRuns();
+  });
+  return runs;
+}
+
+// 只更新左侧列表的选中与已打开标记，不重新请求
+function markLogRuns() {
+  $('#log-runs').querySelectorAll('[data-run]').forEach(li => {
+    li.classList.toggle('active', li.dataset.run === logRun);
+    li.classList.toggle('opened', logTabs.has(li.dataset.run));
+  });
 }
 
 function logStatusText(t) {
@@ -948,6 +988,12 @@ function renderLogTabs() {
   const cur = logTabs.get(logRun);
   $('#log-status').textContent = cur ? logStatusText(cur) : '';
   $('#log-stop').disabled = !cur || cur.status !== 'running';
+  $('#log-close').disabled = !logTabs.size;
+  // 导航上的数字：打开的标签里还在运行的个数
+  const n = [...logTabs.values()].filter(t => t.status === 'running').length;
+  $('#log-badge').textContent = n;
+  $('#log-badge').classList.toggle('hidden', !n);
+  markLogRuns();
 }
 
 // 切换标签时整体替换内容并滚到底部；同一标签追加内容时只在原本就在底部时跟随
@@ -955,10 +1001,12 @@ function showLogBody(reset, appended = '') {
   const body = $('#log-body');
   const cur = logTabs.get(logRun);
   if (reset) {
-    body.textContent = cur ? cur.text : '';
+    if (cur) body.textContent = cur.text;
+    else body.innerHTML = '<span class="log-empty">点左侧的运行查看日志</span>';
     body.scrollTop = body.scrollHeight;
     return;
   }
+  if (!cur) return;
   const atBottom = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;
   body.textContent += appended;
   if (atBottom) body.scrollTop = body.scrollHeight;
@@ -987,6 +1035,7 @@ async function pollLogs() {
       loadList();
       if (current) showTask(current);
       if (!$('#tab-gen').classList.contains('hidden')) loadGenRuns();
+      if (!$('#tab-logs').classList.contains('hidden')) run(loadLogRuns);
     }
     if (![...logTabs.values()].some(t => t.status === 'running')) { clearInterval(logTimer); logTimer = null; }
   } finally {
@@ -1007,22 +1056,11 @@ function closeLog(key) {
 function closeAllLogs() {
   clearInterval(logTimer); logTimer = null;
   logTabs.clear(); logRun = null;
-  $('#log-panel').classList.add('hidden');
-  document.body.classList.remove('log-open');
+  renderLogTabs();
+  showLogBody(true);
 }
 $('#log-close').onclick = closeAllLogs;
-
-// 手动打开日志：所有运行中的运行补成标签；既没有运行中的也没有已打开的标签时，打开最近一次运行
-async function openLogsManually() {
-  const [runs, tasks] = await Promise.all([api('/api/runs'), api('/api/tasks')]);
-  const branch = Object.fromEntries(tasks.map(t => [t.id, t.branch]));
-  const title = r => `${r.task_id ? branch[r.task_id] || '#' + r.task_id : '批量出题'} ${r.kind}`;
-  // 接口按时间倒序，反过来让最新的运行排在最右并成为当前标签
-  runs.filter(r => r.status === 'running').reverse().forEach(r => openLog(r.run_key, title(r)));
-  if (!logTabs.size && runs[0]) openLog(runs[0].run_key, title(runs[0]));
-  if (!logTabs.size) toast('还没有运行记录');
-}
-$('#log-open').onclick = () => run(openLogsManually);
+$('#log-runs-refresh').onclick = () => run(loadLogRuns);
 $('#log-stop').onclick = () => run(async () => { if (logRun) await api(`/api/runs/${logRun}/stop`, { method: 'POST' }); toast('已发送停止'); });
 
 // ---------- 批量出题 ----------
@@ -1060,7 +1098,8 @@ $('#gen-form').onsubmit = e => {
   run(async () => {
     const body = Object.fromEntries(new FormData(e.target));
     const r = await api('/api/gen', { method: 'POST', body });
-    openLog(r.run_key, '批量出题');
+    openLog(r.run_key, '批量出题', false);
+    toast('已开始出题 运行日志在日志页');
     // 这批序号已交给本次出题，清空输入避免重复提交
     $('#gen-seqs').value = '';
     $('#gen-seqs').oninput({ target: $('#gen-seqs') });
@@ -1070,7 +1109,7 @@ $('#gen-form').onsubmit = e => {
 
 async function loadGenRuns() {
   const runs = (await api('/api/runs')).filter(r => r.kind === 'qa-gen');
-  $('#gen-runs').innerHTML = '<div class="table-wrap"><table><colgroup><col style="width:24%"><col style="width:14%"><col><col style="width:80px"></colgroup><tbody>' +
+  $('#gen-runs').innerHTML = '<div class="table-wrap"><table><colgroup><col style="width:170px"><col style="width:96px"><col><col style="width:80px"></colgroup><tbody>' +
     (runs.map(r => `<tr><td class="t-time">${esc(r.started_at)}</td>
     <td><span class="chip ${r.status === 'success' ? 'ok' : r.status === 'running' ? 'busy' : 'fail'}">${esc(r.status)}</span></td>
     <td>${esc(r.error || '')}</td><td><button class="ghost" data-log="${esc(r.run_key)}">日志</button></td></tr>`).join('') ||
@@ -1079,57 +1118,106 @@ async function loadGenRuns() {
 }
 
 // ---------- 配置 ----------
-const CONFIG_FIELDS = [
-  ['github_repo', 'GitHub 仓库（ssh 地址，推送使用 WSL 的 ssh 凭据）'],
-  ['codex_path', 'codex 可执行文件路径（WSL 路径）'],
-  ['agent_workspace_win', 'Codex 工作区（Windows 路径）'],
-  ['agent_workspace_wsl', 'Codex 工作区（WSL 路径）'],
-  ['model', '模型名'],
-  ['reasoning_effort', '推理强度'],
-  ['record_reasoning_effort', '生成录屏脚本的推理强度（留空沿用上面的推理强度）'],
-  ['codex_follow_toml', '沿用 config.toml 的供应商与模型（用 CC Switch 或第三方 API 时勾选；勾选后模型取 config.toml 的 model，没有时才用上面的模型名）', 'checkbox'],
-  ['codex_config_toml', 'config.toml 路径（WSL 路径，留空自动定位 Windows 的 .codex\\config.toml）'],
-  ['wsl_distro', 'WSL 发行版名'],
-  ['concurrency', 'AI 环节并发数', 'number'],
-  ['run_timeout_min', '单次运行超时（分钟）', 'number'],
-  ['codex_max_reconnects', '连续重连上限（codex 连续重连达到该次数即判定连不上供应商并失败，0 表示不限制）', 'number'],
-  ['port_base', '验收端口起点', 'number'],
-  ['port_span', '每题端口数量', 'number'],
-  ['tasks_root', '做题目录根'],
-  ['verify_root', '验收目录根'],
-  ['record_root', '录屏目录根'],
-  ['recording_dir', '录屏文件目录（WSL 路径，自动取其中最新的 mp4）'],
-  ['upload_dir', '待上传文件目录（WSL 路径，轨迹与自动录屏放在这里，文件名为甲方序号-分支名）'],
-  ['gpu_auto_confirm', '自动确认显卡能力（准备环境时依赖显卡的题直接记为通过 不再停下等人工确认 环境检查明细里注明）', 'checkbox'],
-  ['pool_gen_count', '补充题目池每轮出题数（1 到 10）', 'number'],
-  ['do_parallel_max', '自动做题并行数（同时做题的 Claude Code 会话上限，甲方规定最多 15）', 'number'],
-  ['auto_backlog_max', '自动做题后段积压上限（收集 验收 查验 录屏阶段没停下的自动题达到该数量就暂不取新题）', 'number'],
-  ['do_ready_timeout_sec', '等待 Claude Code 就绪（秒）', 'number'],
-  ['do_timeout_min', '单题做题超时（分钟）', 'number'],
-  ['do_idle_sec', '做完判定的静止时长（秒，轨迹记录本轮结束后再静止这么久才算做完）', 'number'],
-  ['do_stall_max_min', '做题卡住判定（分钟 轨迹单次静止 5 分钟以上的时长累计达到该值就关闭会话重做 0 表示不判定）', 'number'],
-  ['do_api_error_redo_max', '接口报错或卡住自动重做次数（做题时遇到 504 529 等接口报错中断或判定卡住 自动作废会话并恢复初始快照重新做题的次数上限 两种情况共用 0 表示不自动重做 直接停下）', 'number'],
-  ['do_api_error_wait_sec', '接口报错或卡住后等待（秒，等这么久再重新做题）', 'number'],
-  ['record_max_sec', '自动录屏时长上限（秒）', 'number'],
-  ['record_audio', '自动录屏录制声音（虚拟屏需要 WSL 中安装 pulseaudio 本机桌面需要 Windows 的 pyaudiowpatch）', 'checkbox'],
-  ['record_desktop', '自动录屏在本机桌面录制（用本机 Chrome Windows Terminal 和真实文件对话框 画面与真人录屏一致 只在桌面空闲时录 有人碰鼠标键盘立即中止 关闭时在 WSL 虚拟屏后台录制）', 'checkbox'],
-  ['record_idle_min', '本机桌面录制前的空闲时长（分钟 没有鼠标键盘操作且没锁屏达到这么久才开录）', 'number'],
-  ['record_user_retries', '本机桌面录制被打断后的重录次数', 'number'],
-  ['feishu_url', '飞书多维表格链接（表头同提交表 另有存甲方序号的 UID 列 留空时不写入飞书 使用 WSL 中 lark-cli 登录的账号）'],
-  ['feishu_auto_sync', '完成后自动写入飞书（题目进入已完成 含返修完成 后按 UID 有则更新 无则新增 失败只记在运行日志里）', 'checkbox'],
+// 配置分组：每组一个标签页；字段为 [配置键, 名称, 类型, 说明, 下拉选项]
+const EFFORTS = [['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh']];
+const CONFIG_GROUPS = [
+  { key: 'codex', title: 'Codex', fields: [
+    ['codex_channel_mode', '通道', 'select', '官方优先时 官方额度用完自动改用三方 API 当场重跑 到报错里的恢复时间后回到官方',
+      [['auto', '官方优先 额度用完切三方'], ['official', '只用官方'], ['fallback', '只用三方 API']]],
+    ['model', '官方模型', 'text', 'ChatGPT 登录使用的模型'],
+    ['reasoning_effort', '推理强度', 'select', '出题 验收 返修使用', EFFORTS],
+    ['record_reasoning_effort', '录屏脚本推理强度', 'select', '生成录屏脚本单独使用', [['', '沿用上面的推理强度'], ...EFFORTS]],
+    ['codex_fallback_base_url', '三方 API 地址', 'text', '到 /v1 为止 需支持 responses 协议'],
+    ['codex_fallback_model', '三方模型', 'text', ''],
+    ['codex_fallback_key', '三方 API Key', 'password', '只保存在 WSL 的配置文件里 页面不回显 留空保存表示不修改'],
+    ['concurrency', 'AI 并发数', 'number', '出题 验收 录屏脚本等 codex 运行同时进行的上限'],
+    ['run_timeout_min', '单次运行超时', 'number', '分钟'],
+  ] },
+  { key: 'auto', title: '自动做题', fields: [
+    ['pool_gen_count', '每轮出题数', 'number', '补充题目池每轮出几道 1 到 10'],
+    ['do_parallel_max', '做题并行数', 'number', '同时做题的 Claude Code 会话上限 甲方规定最多 15'],
+    ['auto_backlog_max', '后段积压上限', 'number', '收集 验收 查验 录屏阶段没停下的自动题达到该数量就暂不取新题'],
+    ['do_timeout_min', '单题做题超时', 'number', '分钟 超时后关闭会话判为失败'],
+    ['do_stall_max_min', '卡住判定', 'number', '分钟 轨迹单次静止 5 分钟以上的时长累计达到该值就关闭会话重做 0 表示不判定'],
+  ] },
+  { key: 'record', title: '自动录屏', fields: [
+    ['record_desktop', '本机桌面录制', 'checkbox', '用本机 Chrome Windows Terminal 和真实文件对话框 只在桌面空闲时录 有人碰鼠标键盘立即中止 关闭时在 WSL 虚拟屏后台录制'],
+    ['record_audio', '录制声音', 'checkbox', '虚拟屏需要 WSL 中的 pulseaudio 本机桌面需要 Windows 的 pyaudiowpatch'],
+    ['record_idle_min', '桌面空闲时长', 'number', '分钟 没有鼠标键盘操作且没锁屏达到这么久才开录'],
+    ['record_max_sec', '录屏时长上限', 'number', '秒'],
+  ] },
+  { key: 'submit', title: '提交与飞书', fields: [
+    ['github_repo', 'GitHub 仓库', 'text', 'ssh 地址 推送使用 WSL 的 ssh 凭据'],
+    ['feishu_url', '飞书多维表格', 'text', '表头同提交表 另有存甲方序号的 UID 列 留空时不写入飞书 使用 WSL 中 lark-cli 登录的账号'],
+    ['feishu_auto_sync', '完成后自动写入飞书', 'checkbox', '题目进入已完成 含返修完成 后按 UID 有则更新 无则新增'],
+  ] },
 ];
+const CONFIG_FIELDS = CONFIG_GROUPS.flatMap(g => g.fields);
+// 只用官方时三方的设置用不到，先收起来
+const FALLBACK_KEYS = ['codex_fallback_base_url', 'codex_fallback_model', 'codex_fallback_key'];
+let configTab = 'codex';
+try { configTab = localStorage.getItem('config-tab') || 'codex'; } catch (e) { /* 浏览器禁用存储时用默认标签 */ }
+
+function configControl(c, [k, , type, , opts]) {
+  // 勾选框保存时按勾选状态转成布尔值；密钥框不回显原值，只提示是否已保存；当前值不在选项里时补上，避免保存时被改掉
+  if (type === 'checkbox') return `<label class="check"><input name="${k}" type="checkbox" ${c[k] ? 'checked' : ''}> 启用</label>`;
+  if (type === 'password') {
+    return `<input name="${k}" type="password" value="" autocomplete="new-password" class="mono" placeholder="${c[k + '_set'] ? '已保存 留空不修改' : '未填写'}">`;
+  }
+  if (type === 'select') {
+    const list = opts.some(([v]) => v === (c[k] ?? '')) ? opts : [...opts, [c[k], c[k]]];
+    return `<select name="${k}">${list.map(([v, t]) => `<option value="${esc(v)}" ${v === (c[k] ?? '') ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+  }
+  return `<input name="${k}" type="${type}" value="${esc(c[k])}" class="${type === 'text' ? 'mono' : ''}">`;
+}
 
 async function loadConfig() {
   const c = await api('/api/config');
-  // 括号里的说明拆成小字提示，标签列保持简短对齐
-  $('#config-form').innerHTML = '<h3>配置</h3><div class="fields">' + CONFIG_FIELDS.map(([k, label, type]) => {
-    const m = label.match(/^(.*?)（(.*)）$/);
-    // 勾选框单独渲染，保存时按勾选状态转成布尔值
-    const ctl = type === 'checkbox'
-      ? `<label class="check"><input name="${k}" type="checkbox" ${c[k] ? 'checked' : ''}> 启用</label>`
-      : `<input name="${k}" type="${type || 'text'}" value="${esc(c[k])}" class="${type ? '' : 'mono'}">`;
-    return field(m ? m[1] : label, ctl, m ? m[2] : '');
-  }).join('') + '<div class="form-foot"><button class="primary" type="submit">保存配置</button></div></div>';
+  if (!CONFIG_GROUPS.some(g => g.key === configTab)) configTab = 'codex';
+  $('#config-form').innerHTML = `
+    <div class="cfg-head"><h3>配置</h3>
+      <div class="seg">${CONFIG_GROUPS.map(g => `<button type="button" data-cfg-tab="${g.key}" class="${g.key === configTab ? 'active' : ''}">${esc(g.title)}</button>`).join('')}</div>
+    </div>
+    ${CONFIG_GROUPS.map(g => `<section class="cfg-group ${g.key === configTab ? '' : 'hidden'}" data-cfg-group="${g.key}">
+      ${g.key === 'codex' ? '<div id="codex-channel" class="codex-channel"></div>' : ''}
+      <div class="cfg-grid">${g.fields.map(f => `<div class="cfg-field" data-cfg-key="${f[0]}">
+        <span class="cfg-lab">${esc(f[1])}</span>${configControl(c, f)}${f[3] ? `<small>${esc(f[3])}</small>` : ''}</div>`).join('')}</div>
+    </section>`).join('')}
+    <div class="form-foot"><button class="primary" type="submit">保存配置</button></div>`;
+  const form = $('#config-form');
+  form.querySelectorAll('[data-cfg-tab]').forEach(b => b.onclick = () => {
+    configTab = b.dataset.cfgTab;
+    try { localStorage.setItem('config-tab', configTab); } catch (e) { /* 忽略 */ }
+    form.querySelectorAll('[data-cfg-tab]').forEach(x => x.classList.toggle('active', x === b));
+    form.querySelectorAll('[data-cfg-group]').forEach(s => s.classList.toggle('hidden', s.dataset.cfgGroup !== configTab));
+  });
+  const mode = form.elements.codex_channel_mode;
+  const syncFallback = () => FALLBACK_KEYS.forEach(k =>
+    form.querySelector(`[data-cfg-key="${k}"]`).classList.toggle('hidden', mode.value === 'official'));
+  mode.onchange = syncFallback;
+  syncFallback();
+  renderCodexChannel(await api('/api/codex/channel'));
+}
+
+// codex 当前通道：官方额度用完时显示恢复时间，可以手动立即切回官方
+function renderCodexChannel(s) {
+  const el = $('#codex-channel');
+  if (!el) return;
+  const text = s.mode === 'fallback'
+    ? `当前只用三方 API${s.fallback_ready ? '' : ' <span class="bad">三方地址 Key 模型没有填完整</span>'}`
+    : s.mode === 'official'
+      ? `当前只用官方${s.official_blocked ? ` <span class="bad">官方额度用完 预计 ${esc(s.official_blocked_until)} 恢复</span>` : ''}`
+      : s.channel === 'fallback'
+        ? `当前使用三方 API 官方额度预计 ${esc(s.official_blocked_until)} 恢复（${esc(s.switched_at)} 切换）`
+        : s.official_blocked
+          ? `<span class="bad">官方额度用完 预计 ${esc(s.official_blocked_until)} 恢复 三方 API 没有填完整</span>`
+          : `当前使用官方${s.fallback_ready ? ' 额度用完时自动改用三方 API' : ' <span class="bad">三方 API 没有填完整 额度用完时无法切换</span>'}`;
+  el.innerHTML = `<span title="${esc(s.reason || '')}">${text}</span>` +
+    (s.official_blocked && s.mode === 'auto' ? ' <button type="button" class="ghost" data-codex-reset title="清除官方额度用完的记录 之后的新运行先走官方 仍限流时会再切到三方">立即切回官方</button>' : '');
+  el.querySelectorAll('[data-codex-reset]').forEach(b => b.onclick = () => run(async () => {
+    renderCodexChannel(await api('/api/codex/channel/reset', { method: 'POST' }));
+    toast('已切回官方');
+  }));
 }
 
 $('#config-form').onsubmit = e => {
@@ -1141,6 +1229,7 @@ $('#config-form').onsubmit = e => {
     CONFIG_FIELDS.filter(f => f[2] === 'checkbox').forEach(([k]) => body[k] = e.target.elements[k].checked);
     await api('/api/config', { method: 'PUT', body });
     toast('配置已保存');
+    renderCodexChannel(await api('/api/codex/channel'));
   });
 };
 
@@ -1169,6 +1258,7 @@ function renderAutoBar() {
   const front = (d.preparing || [])[0];
   const doingN = (d.doing || []).length;
   const paused = (d.paused || []).length;
+  const cx = autoState.codex || {};
   // 按钮随运行方式变化：未开启只有开始；运行中可选做完当前题后停止或立即停止；做完当前题后停止时可恢复取题
   const B = {
     start: `<button type="button" class="primary" data-auto-do="start" title="从题目池按顺序取题 自动准备环境 做题 收集 验收 查验 录屏">开始做题</button>`,
@@ -1187,6 +1277,9 @@ function renderAutoBar() {
       <span title="收集 验收 查验 录屏阶段的自动题（不含停下的） / 积压上限">后段 ${(d.backlog || []).length}/${esc(d.backlog_max ?? '-')}</span>
       ${paused ? `<a href="#" class="bad" data-paused="1" title="只看自动流程停下待处理的题">需处理 ${paused}</a>` : ''}
       <span class="muted" title="待初始化且未被接管的题">池 ${esc(d.pool ?? 0)}</span>
+      ${cx.mode === 'fallback' ? '<span class="chip human" title="配置页的 Codex 通道设为只用三方 API">Codex 只用三方</span>'
+        : cx.channel === 'fallback' ? `<span class="chip human" title="官方额度用完 ${esc(cx.reason || '')}">Codex 三方 至 ${esc(cx.official_blocked_until.slice(5))}</span>`
+        : cx.official_blocked ? `<span class="bad" title="${cx.mode === 'official' ? '通道设为只用官方' : '三方 API 没有填完整'}">Codex 限流 至 ${esc(cx.official_blocked_until.slice(5))}</span>` : ''}
       ${d.error ? `<span class="bad" title="${esc(d.error)}">调度出错</span>` : ''}</span>` : ''}`;
   const DO_TOAST = { start: '已开始自动做题', finish: '不再取新题 已接管的题走完后自动停止', stop: '已停止取新题 在跑的环节跑完为止' };
   $('#auto-bar').querySelectorAll('[data-auto-do]').forEach(b => b.onclick = () => run(async () => {
