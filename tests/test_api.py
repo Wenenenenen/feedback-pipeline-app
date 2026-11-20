@@ -973,3 +973,37 @@ def test_review_normalizes_feedback_format(client, monkeypatch):
     t = db.get_task(tid)
     assert '`' not in t['feedback'] and 'ALL' not in t['feedback']
     assert pipeline.feedback_issues(t['feedback'], 2) == []
+
+
+class _LingerProc(_FakeProc):
+    """本轮已结束但进程不退出：输出完事件后一直阻塞，直到被结束。"""
+
+    @property
+    def stdout(self):
+        import time as _t
+        for s in self.lines:
+            yield (s + '\n').encode('utf-8')
+        while not self.killed:
+            _t.sleep(0.02)
+
+
+def test_run_skill_kills_lingering_after_turn_completed(data_dir, tmp_path, monkeypatch):
+    """收到 turn.completed 后进程迟迟不退出时结束它，按已写出的结果文件返回。"""
+    ws = tmp_path / 'ws'
+    (ws / 'schemas').mkdir(parents=True, exist_ok=True)
+    (ws / 'schemas' / 'qa-gen.json').write_text('{"type":"object","required":["ok"]}', encoding='utf-8')
+    config.save({'agent_workspace_wsl': str(ws)})
+    lines = ['{"type":"thread.started"}', '{"type":"turn.completed","usage":{}}']
+    proc = _LingerProc(lines)
+
+    def popen(*a, **k):
+        (ws / 'runs' / 'r1' / 'result.json').write_text('{"ok": true}', encoding='utf-8')
+        return proc
+    kills = []
+    monkeypatch.setattr(codex_runner.subprocess, 'Popen', popen)
+    monkeypatch.setattr(codex_runner, '_kill_windows', kills.append)
+    monkeypatch.setattr(codex_runner, 'TURN_EXIT_GRACE', 0.2)
+    logs = []
+    assert codex_runner.run_skill('qa-gen', '输入', 'r1', logs.append) == {'ok': True}
+    assert proc.killed and kills == ['r1']
+    assert any('仍未退出' in s for s in logs)

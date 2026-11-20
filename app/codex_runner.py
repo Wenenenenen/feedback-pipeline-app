@@ -361,6 +361,17 @@ def _run_once(cfg: dict, skill: str, run_key: str, input_text: str, schema: dict
         raise
 
 
+# 收到 turn.completed 后等 codex 自己退出的秒数，超过就结束进程（结果文件此时已写出）
+TURN_EXIT_GRACE = 90
+
+
+def _is_turn_completed(line: str) -> bool:
+    try:
+        return json.loads(line).get('type') == 'turn.completed'
+    except (ValueError, AttributeError):
+        return False
+
+
 def _exec(cfg: dict, skill: str, run_key: str, input_text: str, schema: dict, run_dir: Path, log,
           stop_flag: threading.Event | None, channel: str) -> dict:
     ws_wsl = Path(cfg['agent_workspace_wsl'])
@@ -391,19 +402,28 @@ def _exec(cfg: dict, skill: str, run_key: str, input_text: str, schema: dict, ru
     t_err.start()
     deadline = time.time() + timeout
     killed = None
+    # 收到 turn.completed 的时间；之后进程迟迟不退出（验收时起的后台服务、浏览器脚本占着输出管道）就结束它
+    turn_done_at = None
+    lingered = False
 
     def _watch():
-        nonlocal killed
+        nonlocal killed, lingered
         while p.poll() is None:
             if time.time() > deadline:
                 killed = f'超过 {cfg["run_timeout_min"]} 分钟未完成'
             elif stop_flag is not None and stop_flag.is_set():
                 killed = '人工停止'
+            elif turn_done_at is not None and time.time() > turn_done_at + TURN_EXIT_GRACE:
+                lingered = True
+                log(f'本轮已结束 {TURN_EXIT_GRACE} 秒 codex 仍未退出（多半是验收时起的后台进程没关），结束进程并读取结果文件')
+                p.kill()
+                _kill_windows(run_key)
+                return
             if killed:
                 p.kill()
                 _kill_windows(run_key)
                 return
-            time.sleep(2)
+            time.sleep(min(2, TURN_EXIT_GRACE))
 
     threading.Thread(target=_watch, daemon=True).start()
     max_reconnects = int(cfg.get('codex_max_reconnects') or 0)
@@ -415,6 +435,8 @@ def _exec(cfg: dict, skill: str, run_key: str, input_text: str, schema: dict, ru
                 error_events.append(line[:2000])
                 del error_events[:-20]
             log(_event_line(line))
+            if turn_done_at is None and _is_turn_completed(line):
+                turn_done_at = time.time()
             # 只数连续的重连事件，中间出现其他事件说明已恢复，重新计数
             reconnects = reconnects + 1 if _is_reconnect_event(line) else 0
             if max_reconnects and reconnects >= max_reconnects and not killed:
@@ -426,7 +448,8 @@ def _exec(cfg: dict, skill: str, run_key: str, input_text: str, schema: dict, ru
     t_err.join(timeout=5)
     if killed:
         raise CodexError(killed)
-    if p.returncode != 0:
+    # 本轮已正常结束、只是进程没退出时，不看退出码，直接按结果文件判断
+    if p.returncode != 0 and not lingered:
         reason = failure_reason(p.returncode, stderr_lines, error_events, channel)
         if failure_kind(stderr_lines, error_events) == 'rate_limit':
             raise RateLimitError(reason, '\n'.join(stderr_lines + error_events))
