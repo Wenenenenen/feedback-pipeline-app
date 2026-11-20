@@ -636,6 +636,13 @@ def start_review(task_id: int) -> str:
         gitops.fresh_clone(cfg['github_repo'], t['branch'], t['artifact_sha'], vdir, log=log)
         text = _review_input(t, vdir, run_key)
         r = codex_runner.run_skill('qa-review', text, run_key, log, stop)
+        # 格式问题（反引号、大写、中文引号、多余空格）机械规整，只改字不改意思，避免逐题停在待查验
+        if style_check.check_feedback(r['feedback']):
+            fixed = style_check.normalize_feedback(r['feedback'])
+            if fixed != r['feedback']:
+                log(f"Feedback 格式已自动规整（口吻问题 {len(style_check.check_feedback(r['feedback']))} 条"
+                    f"→{len(style_check.check_feedback(fixed))} 条），原文：{r['feedback']}")
+                r['feedback'] = fixed
         issues = feedback_issues(r['feedback'], r['delivery_score'])
         log(f"评分 {r['delivery_score']} 口吻与内容问题 {len(issues)} 条 "
             f"录屏步骤问题 {len(record_issues(r['record_steps'], r.get('record_prep')))} 条 "

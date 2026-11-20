@@ -139,3 +139,24 @@ def test_feedback_fixed_opening_flagged():
     ok = ('模型只测了非音频导入 最终提交里dsp.js:36的decodewav截短data块不报错 '
           '截断文件也被接收 问题仍在 给3分')
     assert content_rules(ok, 3) == []
+
+
+def test_normalize_feedback_fixes_format_only():
+    """三方模型常见的格式问题机械规整后通过口吻检查，意思不变。"""
+    from app.style_check import normalize_feedback
+    raw = ('产物上，`decal-core.js:35` 的 `buildDecals()` 没有校验，奇异worldToBox导入后页面显示“32F · E=1 · 环1”，'
+           '我点了 Play 按钮也没用，给3分。')
+    fixed = normalize_feedback(raw)
+    assert check_feedback(fixed) == []
+    assert fixed == ('产物上，decal-core.js:35的builddecals没有校验，奇异worldtobox导入后页面显示32f e=1 环1，'
+                     '我点了play按钮也没用，给3分。')
+    # 已合规的文字不变
+    assert normalize_feedback(GOOD) == GOOD
+
+
+def test_normalize_feedback_keeps_unfixable_issues():
+    """命令里的管道符等改不掉的问题保留，交给自动查验拦下。"""
+    from app.style_check import normalize_feedback
+    fixed = normalize_feedback('运行`node a.js 2>&1 | tail -3`返回ALL PASSED')
+    assert 'all passed' in fixed
+    assert any('英文符号' in r or '英文标点' in r for r in rules(fixed))

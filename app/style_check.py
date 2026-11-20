@@ -177,6 +177,44 @@ def check_prompt(text: str) -> list[dict]:
     return _dedupe(issues)
 
 
+# 只起包裹作用的符号：反引号、中文引号与书名号，去掉不改变意思
+_WRAP_MARKS = re.compile(r'[`“”‘’「」『』《》]')
+# 函数名后的空括号，style.md 要求函数名不带括号
+_EMPTY_CALL = re.compile(r'([A-Za-z0-9_])\(\)')
+# 英文或数字片段两侧都用空格与中文隔开时，去掉两侧空格（与 _SPACE_CN_EN 的判定一致）
+_SPACE_CN_EN_FIX = re.compile(rf'([{CJK}]) +([^\s{CJK}{FEEDBACK_PUNCT_OK}]+) +(?=[{CJK}])')
+
+
+def normalize_feedback(text: str) -> str:
+    """机械规整 Feedback 的格式问题，只改字不改意思。
+
+    三方模型验收时常忽略 style.md 的格式要求（反引号包代码、英文大写、中文引号、英文两侧加空格），
+    这些都能确定性地改掉；改不掉的问题（如命令里的管道符、括号）留给自动查验拦下。
+    """
+    if not text:
+        return text
+    # 反引号与中文之间的修饰空格先去掉，再去掉反引号本身
+    s = re.sub(rf'(?<=[{CJK}{FEEDBACK_PUNCT_OK}]) +(?=`)', '', text)
+    s = re.sub(rf'(?<=`) +(?=[{CJK}{FEEDBACK_PUNCT_OK}])', '', s)
+    s = _WRAP_MARKS.sub('', s)
+    s = _EMPTY_CALL.sub(r'\1', s)
+    # 中点分隔符换成空格断句
+    s = s.replace('·', ' ')
+    # 英文全部小写
+    s = re.sub(r'[A-Z]', lambda m: m.group().lower(), s)
+    # 反复替换直到稳定：相邻片段共用中间的中文字符，一次替换会漏掉后一个
+    while True:
+        t = _SPACE_CN_EN_FIX.sub(r'\1\2', s)
+        if t == s:
+            break
+        s = t
+    # 标点前后不加空格，连续空格合并
+    s = re.sub(rf' +(?=[{FEEDBACK_PUNCT_OK}])', '', s)
+    s = re.sub(rf'(?<=[{FEEDBACK_PUNCT_OK}]) +', '', s)
+    s = re.sub(r' {2,}', ' ', s)
+    return s.strip()
+
+
 def _dedupe(issues: list[dict]) -> list[dict]:
     seen, out = set(), []
     for it in issues:

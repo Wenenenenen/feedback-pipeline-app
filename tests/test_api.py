@@ -951,3 +951,25 @@ def test_record_issues_kill_only_shell_command():
     assert hit('killall node')
     assert not hit('kill\nwolf')
     assert not hit('事件type填为kill 默认tag键填wolf')
+
+
+def test_review_normalizes_feedback_format(client, monkeypatch):
+    """验收返回的 Feedback 只有格式问题时自动规整，题目不停在待查验。"""
+    from app import gitops
+    tid = new_task(status=pipeline.S_REVIEW, artifact_sha='b' * 40)
+    raw = GOOD_FEEDBACK.replace('给', ' `ALL` 给', 1)
+
+    def fake(skill, text, run_key, log, stop=None):
+        return {'evidence': [], 'delivery_score': 2, 'score_reason': '白屏', 'feedback': raw,
+                'record_steps': [{'action': '打开页面', 'command': '', 'expect': '白屏'}],
+                'record_prep': {'setup': '', 'cleanup': ''}, 'reproducibility': '无外部依赖',
+                'remark': '', 'lang_framework': '', 'self_check': {'has_process': True, 'has_product': True,
+                                                                   'has_code_anchor': True, 'score_consistent': True,
+                                                                   'note': 'ok'}}
+    monkeypatch.setattr(codex_runner, 'run_skill', fake)
+    monkeypatch.setattr(gitops, 'fresh_clone', lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, '_review_input', lambda *a, **k: '输入')
+    assert wait_run(pipeline.start_review(tid))['status'] == 'success'
+    t = db.get_task(tid)
+    assert '`' not in t['feedback'] and 'ALL' not in t['feedback']
+    assert pipeline.feedback_issues(t['feedback'], 2) == []
