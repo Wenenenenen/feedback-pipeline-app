@@ -19,7 +19,11 @@ def test_inner_symbols_allowed():
 
 
 def test_chinese_punctuation():
-    assert any('中文标点' in r for r in rules('页面白屏，控制台报错'))
+    # 只允许，。、；四种简单中文标点，其余中文标点仍拦下
+    assert check_feedback('页面白屏，控制台报错；刷新、重启都没用。') == []
+    assert check_feedback('最终提交里src/parser.py:82，parse_response没判空。') == []
+    for bad in '：？！“（《【…':
+        assert any('中文标点' in r for r in rules(f'页面白屏{bad}控制台报错')), bad
 
 
 def test_uppercase():

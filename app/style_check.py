@@ -21,6 +21,8 @@ PROMPT_ENV_BOILERPLATE = ['从空仓库', 'ubuntu', 'wsl', 'docker', 'windows浏
 _PROMPT_OPENING = re.compile(r'^\s*(我在做|我想做|我想要做|帮我)')
 
 CN_PUNCT = set('，。、；：？！“”‘’（）《》【】…—·「」『』〈〉﹏～￥')
+# Feedback 允许的简单中文标点：逗号 句号 顿号 分号；其余中文标点仍不允许
+FEEDBACK_PUNCT_OK = '，。、；'
 # 任何位置都不允许的英文标点
 ASCII_ALWAYS_BAD = set(',;!?()[]{}"\'`<>')
 # 只允许出现在英文词内部的符号
@@ -29,8 +31,9 @@ ASCII_INNER_OK = set('./-_:+#%=@~')
 CJK = r'一-鿿㐀-䶿'
 # 英文或数字片段两侧都用空格与中文隔开（如「我点了 play 按钮」），说明至少一侧是多余的修饰空格；
 # 只有一侧有空格时按断句处理（空格代替标点），不报错
-_SPACE_CN_EN = re.compile(rf'[{CJK}] +[^\s{CJK}]+ +(?=[{CJK}])')
-_RUN = re.compile(rf'[^\s{CJK}]+')
+_SPACE_CN_EN = re.compile(rf'[{CJK}] +[^\s{CJK}{FEEDBACK_PUNCT_OK}]+ +(?=[{CJK}])')
+# 英文片段：允许的中文标点也是片段边界，src/a.py:82，这类写法不把逗号算进片段
+_RUN = re.compile(rf'[^\s{CJK}{FEEDBACK_PUNCT_OK}]+')
 _MD_LINE = re.compile(r'^\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|>\s|```|\|)')
 
 
@@ -64,8 +67,10 @@ def check_feedback(text: str) -> list[dict]:
             issues.append(_issue('使用了 markdown', text, pos))
         pos += len(line) + 1
 
-    # 中文标点
+    # 中文标点（，。、；四种允许）
     for i, ch in enumerate(text):
+        if ch in FEEDBACK_PUNCT_OK:
+            continue
         if ch in CN_PUNCT or 0xFF01 <= ord(ch) <= 0xFF5E:
             issues.append(_issue(f'中文标点 {ch}', text, i))
 
