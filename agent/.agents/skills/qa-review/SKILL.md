@@ -72,7 +72,7 @@ description: 对单轮做题的产物与轨迹做实测验收，给出证据清�
      - 「已容器化，可一键起环境」：产物自带 Dockerfile 或 compose 等配置，并且验收时实测一条命令能拉起完整环境；
      素材已随初始快照提交的不算外部依赖；
    - `lang_framework`：按最终提交的源码树填写语言/框架，输入里出题时的预估只作参考：
-     - 只写产物里真实存在的源码语言与实际引入的框架、库、浏览器 API（如 `JavaScript, HTML, CSS, Canvas 2D`、`Python, FastAPI, NumPy`），用官方大小写，英文逗号加空格分隔，不带版本号和说明文字；
+     - 只写产物里真实存在的源码语言与实际引入的框架、库、浏览器 API（如 `JavaScript, HTML, CSS, Canvas2D`、`Python, FastAPI, NumPy`），用官方大小写，英文逗号加空格分隔，不带版本号和说明文字；
      - 只用来起静态服务（如 `python3 -m http.server`）或只在 README 里提到的工具不算；有 `.py` 测试或素材脚本并且进了产物提交的才写 Python；
      - 依据是产物的文件树、依赖清单（package.json、requirements.txt、pyproject.toml 等）和源码里的 import；
    - `remark`：在出题备注草稿基础上补充（如中断与「继续」说明、录屏注意事项），保持简短；

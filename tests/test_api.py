@@ -743,7 +743,7 @@ def test_rework_fixes_lang_framework(client, monkeypatch):
     key = client.post(f'/api/tasks/{tid}/action/rework', json={'text': REWORK_TEXT}).json()['run_key']
     assert wait_run(key)['status'] == 'success'
     assert '语言/框架 python,javascript,fastapi' in seen['text']
-    assert db.get_task(tid)['lang_framework'] == 'JavaScript, Canvas 2D'
+    assert db.get_task(tid)['lang_framework'] == 'JavaScript, Canvas2D'
     d = client.get(f'/api/tasks/{tid}').json()
     assert '语言/框架' in d['inspections'][0]['changed_columns']
 
@@ -815,7 +815,9 @@ def test_normalize_lang_in_submission(client):
     # 旧的小写写法改成官方大小写，同一项只留一个；不认识的名字保留原写法
     assert n('python,javascript,numpy,scipy,canvas') == 'Python, JavaScript, NumPy, SciPy, Canvas'
     assert n('javascript, JavaScript, nodejs, node.js') == 'JavaScript, Node.js'
-    assert n('JavaScript, Canvas2D, wgpu, MyLib') == 'JavaScript, Canvas 2D, wgpu, MyLib'
+    assert n('JavaScript, Canvas2D, wgpu, MyLib') == 'JavaScript, Canvas2D, wgpu, MyLib'
+    # Canvas 2D 带不带空格都写成 Canvas2D
+    assert n('JavaScript, Canvas 2D') == 'JavaScript, Canvas2D'
     assert n('') == '' and n(None) == ''
     tid = done_task(lang_framework='Python 3.12 + SQLite')
     cells = {c['name']: c['value'] for c in client.post('/api/submission', json={}).json()['rows'][0]['cells']}

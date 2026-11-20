@@ -28,7 +28,7 @@ _LANG_CANON = {
     'react': 'React', 'vue': 'Vue', 'vuejs': 'Vue', 'svelte': 'Svelte', 'angular': 'Angular', 'vite': 'Vite',
     'express': 'Express', 'nextjs': 'Next.js', 'threejs': 'Three.js', 'three': 'Three.js', 'd3': 'D3.js',
     'd3js': 'D3.js', 'pixijs': 'PixiJS', 'tailwindcss': 'Tailwind CSS', 'tailwind': 'Tailwind CSS',
-    'canvas': 'Canvas', 'canvas2d': 'Canvas 2D', 'webgl': 'WebGL', 'webgl2': 'WebGL2', 'webgpu': 'WebGPU',
+    'canvas': 'Canvas', 'canvas2d': 'Canvas2D', 'webgl': 'WebGL', 'webgl2': 'WebGL2', 'webgpu': 'WebGPU',
     'webaudio': 'Web Audio API', 'webaudioapi': 'Web Audio API', 'webworker': 'Web Worker',
     'webworkers': 'Web Worker', 'webassembly': 'WebAssembly', 'wasm': 'WebAssembly', 'websocket': 'WebSocket',
     'webrtc': 'WebRTC', 'webcodecs': 'WebCodecs', 'indexeddb': 'IndexedDB', 'svg': 'SVG',
