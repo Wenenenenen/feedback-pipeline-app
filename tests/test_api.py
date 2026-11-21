@@ -1007,3 +1007,15 @@ def test_run_skill_kills_lingering_after_turn_completed(data_dir, tmp_path, monk
     assert codex_runner.run_skill('qa-gen', '输入', 'r1', logs.append) == {'ok': True}
     assert proc.killed and kills == ['r1']
     assert any('仍未退出' in s for s in logs)
+
+
+def test_task_list_rework_rounds(client):
+    """列表接口带上返修轮数，页面按「返修过的」筛选用；没登记过质检的为 0。"""
+    plain = new_task()
+    tid = new_task(branch='reworked', status=pipeline.S_DONE)
+    for rnd in (1, 2):
+        db.insert_inspection({'task_id': tid, 'round': rnd, 'verdict': '待返修', 'raw_text': '质检原文',
+                              'state': pipeline.I_DONE})
+    items = {x['id']: x for x in client.get('/api/tasks').json()}
+    assert items[tid]['rework_rounds'] == 2
+    assert items[plain]['rework_rounds'] == 0

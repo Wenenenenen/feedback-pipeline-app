@@ -224,11 +224,39 @@ const statusFilter = multiPicker($('#status-filter'), {
   options: [], allText: '全部状态', storeKey: 'list-status-filter', onChange: () => run(loadList),
 });
 
+// 已完成：只看状态是否为已完成，与是否已在甲方平台提交无关
+function isFinished(t) {
+  return t.status === '已完成';
+}
+
+// 勾选筛选项「隐藏已完成」「返修过的」：与状态筛选同时生效，勾选状态记在本地
+// 返回判定函数 (题目, 是否返修过) => 是否显示
+function flagFilter(hideSel, reworkSel, storeKey, onChange) {
+  const hide = $(hideSel), rework = $(reworkSel);
+  try {
+    const s = JSON.parse(localStorage.getItem(storeKey) || '{}');
+    hide.checked = !!s.hide;
+    rework.checked = !!s.rework;
+  } catch (e) { /* 本地存储不可用时按都不勾处理 */ }
+  const changed = () => {
+    try { localStorage.setItem(storeKey, JSON.stringify({ hide: hide.checked, rework: rework.checked })); } catch (e) { /* 忽略 */ }
+    onChange();
+  };
+  hide.onchange = changed;
+  rework.onchange = changed;
+  const test = (t, reworked) => (!hide.checked || !isFinished(t)) && (!rework.checked || reworked);
+  // 当前勾了哪些，提交表范围说明里展示
+  test.labels = () => [hide.checked && '隐藏已完成', rework.checked && '返修过的'].filter(Boolean);
+  return test;
+}
+const listFlags = flagFilter('#list-hide-done', '#list-reworked', 'list-flag-filter', () => run(loadList));
+
 async function loadList() {
   // 多选按「或」组合：题目满足任一勾选项即显示；不勾选时显示全部
   const sel = new Set(statusFilter.values());
   let rows = await api('/api/tasks');
   if (sel.size) rows = rows.filter(t => sel.has(t.status) || (sel.has('__auto') && t.auto_run) || (sel.has('__paused') && t.auto_paused));
+  rows = rows.filter(t => listFlags(t, t.rework_rounds > 0));
   const checked = new Set([...document.querySelectorAll('.row-check:checked')].map(x => +x.value));
   $('#task-count').textContent = `${rows.length} 题`;
   $('#task-table tbody').innerHTML = rows.map(t => `
@@ -375,6 +403,8 @@ const subStatus = multiPicker($('#sub-status'), {
   options: [], allText: '全部状态', storeKey: 'sub-status-filter', initial: ['已完成'],
   onChange: () => { subScope = 'all'; run(loadSubmission); },
 });
+// 勾选筛选项对两种范围都生效，切换时保持当前范围
+const subFlags = flagFilter('#sub-hide-done', '#sub-reworked', 'sub-flag-filter', () => run(loadSubmission));
 
 function checkedIds() {
   return [...document.querySelectorAll('.row-check:checked')].map(x => +x.value);
@@ -386,13 +416,16 @@ async function loadSubmission() {
   const useChecked = subScope === 'checked' && checked.length > 0;
   const statuses = subStatus.values();
   const data = await api('/api/submission', { method: 'POST', body: useChecked ? { ids: checked } : { statuses } });
+  // 先按勾选筛选项过滤，后面的行号、导出与写入飞书都按过滤后的题目
+  data.rows = data.rows.filter(r => subFlags(r, !!r.rework));
+  const flagText = subFlags.labels().map(s => ' ' + s).join('');
   $('#sub-scope-all').classList.toggle('active', !useChecked);
   $('#sub-scope-checked').classList.toggle('active', useChecked);
   $('#sub-scope-checked').disabled = !checked.length;
   $('#sub-scope-checked').textContent = `列表勾选的${checked.length ? ` ${checked.length} 题` : ''}`;
   $('#sub-status').classList.toggle('dim', useChecked);
   const stText = statuses.length ? statuses.join('、') : '全部状态';
-  $('#sub-scope').textContent = useChecked ? `勾选的 ${data.rows.length} 题` : `${stText} ${data.rows.length} 题`;
+  $('#sub-scope').textContent = useChecked ? `勾选的${flagText} ${data.rows.length} 题` : `${stText}${flagText} ${data.rows.length} 题`;
   // 导出与写入飞书都按当前页里的题目
   const ids = data.rows.map(r => r.id);
   // 每行可折叠：只有一题时默认展开，多题时默认折叠
@@ -882,7 +915,7 @@ async function doAction(t, act, idx) {
   }
   const r = await api(`/api/tasks/${id}/action/${act}`, { method: 'POST', body });
   // 后台运行不跳走：在日志页加一个标签，跑完时刷新列表与详情
-  if (r.run_key) { openLog(r.run_key, `${t.branch} ${act}`, false); toast('已开始 运行日志在日志页'); }
+  if (r.run_key) { openLog(r.run_key, `${t.client_seq || t.branch} ${act}`, false); toast('已开始 运行日志在日志页'); }
   else toast(act === 'auto_retry' ? '已重试 自动做题会接着推进' : '完成');
   await loadList();
   await showTask(id);
@@ -942,16 +975,26 @@ async function enterLogs() {
 }
 
 // 最近运行列表：题目运行显示分支名，出题与写入飞书等没有题目的运行显示类别
+// 运行环节的中文动作名，左侧列表显示为「甲方序号-动作」，如 14329-验收
+const RUN_KIND_TEXT = {
+  'qa-gen': '出题', prepare: '准备环境', redo: '重做', 'auto-do': '自动做题', collect: '收集',
+  'qa-review': '验收', 'prepare-record': '准备录屏', 'auto-record': '自动录屏', 'qa-rework': '返修', feishu: '写飞书',
+};
 async function loadLogRuns() {
   const [runs, tasks] = await Promise.all([api('/api/runs'), api('/api/tasks')]);
-  const branch = Object.fromEntries(tasks.map(t => [t.id, t.branch]));
+  const byId = Object.fromEntries(tasks.map(t => [t.id, t]));
   // 标签名带上开始时间，同类运行（如多次出题）也能分清
   runs.forEach(r => {
-    r.name = `${r.task_id ? branch[r.task_id] || '#' + r.task_id : '批量'} ${r.kind}`;
+    const t = byId[r.task_id];
+    // 没有甲方序号的题用分支名，没有题目的运行（批量出题、批量写飞书）显示批量
+    const who = r.task_id ? (t ? t.client_seq || t.branch : '#' + r.task_id) : '批量';
+    r.name = `${who}-${RUN_KIND_TEXT[r.kind] || r.kind}`;
     r.title = `${r.name} ${(r.started_at || '').slice(11, 16)}`;
+    // 悬停提示带上分支名，列表只显示甲方序号时也能对上题目
+    r.hint = [t && t.client_seq ? t.branch : '', r.error || r.run_key].filter(Boolean).join(' ');
   });
   $('#log-runs').innerHTML = runs.length ? `<ul class="run-list">${runs.map(r => `
-    <li class="${r.run_key === logRun ? 'active' : ''} ${logTabs.has(r.run_key) ? 'opened' : ''}" data-run="${esc(r.run_key)}" data-title="${esc(r.title)}" title="${esc(r.error || r.run_key)}">
+    <li class="${r.run_key === logRun ? 'active' : ''} ${logTabs.has(r.run_key) ? 'opened' : ''}" data-run="${esc(r.run_key)}" data-title="${esc(r.title)}" title="${esc(r.hint)}">
       <i class="dot ${esc(r.status)}"></i>
       <span class="rl-title">${esc(r.name)}</span>
       <span class="rl-time">${esc((r.started_at || '').slice(5, 16))}</span></li>`).join('')}</ul>` : '<div class="muted">还没有运行记录</div>';

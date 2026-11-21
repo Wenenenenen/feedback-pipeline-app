@@ -29,6 +29,9 @@
       <div class="toolbar">
         <button id="list-toggle" class="ghost list-toggle" title="向左折叠题目列表">«</button>
         <span id="status-filter" title="可多选 题目满足任一勾选项即显示 不选为全部"></span>
+        <!-- 与状态筛选同时生效：两项都勾时只看返修过且没完成的题 -->
+        <label class="flag-check" title="隐藏状态为已完成的题"><input type="checkbox" id="list-hide-done">隐藏已完成</label>
+        <label class="flag-check" title="只看登记过质检返修的题"><input type="checkbox" id="list-reworked">返修过的</label>
         <button id="refresh" class="ghost">刷新</button>
         <span class="spacer"></span>
         <span class="auto-bar" id="auto-bar"></span>
@@ -54,6 +57,8 @@
           <button type="button" id="sub-scope-checked" class="ghost" title="题目页列表里勾选的题目">列表勾选的</button>
         </span>
         <span id="sub-status" title="可多选 不选为全部状态 默认只看已完成"></span>
+        <label class="flag-check" title="隐藏状态为已完成的题"><input type="checkbox" id="sub-hide-done">隐藏已完成</label>
+        <label class="flag-check" title="只看登记过质检返修的题"><input type="checkbox" id="sub-reworked">返修过的</label>
         <span class="spacer"></span>
         <span class="muted hint">点单元格复制该格 复制整行可直接粘贴到表格</span>
         <button type="button" id="sub-refresh" class="ghost">刷新</button>

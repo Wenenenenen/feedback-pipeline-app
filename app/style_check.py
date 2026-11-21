@@ -158,6 +158,30 @@ def check_feedback_content(text: str, score=None) -> list[dict]:
     return issues
 
 
+# 过程问题的写法：要写模型在过程中做了什么，不写成分析轨迹得到的内容
+_TRAJ_ANALYSIS = ['轨迹第', '完整轨迹', '原轨', '轨迹物理']
+# 「过程上……。产物上……」是固定模板，篇篇一样会显得模板化
+_TEMPLATE_PAIR = ('过程上', '产物上')
+
+
+def check_feedback_voice(text: str) -> list[dict]:
+    """过程写法检查：不写轨迹分析口吻，不套过程上 产物上的固定模板。
+
+    只用于新写的 Feedback（验收与自动查验）；返修只按质检意见改，不因这条重写已提交的内容。
+    """
+    text = text or ''
+    issues = []
+    for w in _TRAJ_ANALYSIS:
+        i = text.find(w)
+        if i >= 0:
+            issues.append(_issue(f'过程写成了轨迹分析 {w} 改成模型在过程中做了什么 行号最多带一个且不写轨迹二字', text, i))
+            break
+    if all(w in text for w in _TEMPLATE_PAIR):
+        issues.append(_issue('套用了过程上 产物上的固定模板 过程那句直接写模型做了什么 产物那句落到文件和代码',
+                             text, text.find(_TEMPLATE_PAIR[0])))
+    return issues
+
+
 def check_prompt(text: str) -> list[dict]:
     """prompt 允许正常标点与代码，只查 AI 化表达。"""
     # 除 AI 化表达外，prompt 还要拦截刻意模仿口语的情绪化词汇
@@ -183,6 +207,19 @@ _WRAP_MARKS = re.compile(r'[`“”‘’「」『』《》]')
 _EMPTY_CALL = re.compile(r'([A-Za-z0-9_])\(\)')
 # 英文或数字片段两侧都用空格与中文隔开时，去掉两侧空格（与 _SPACE_CN_EN 的判定一致）
 _SPACE_CN_EN_FIX = re.compile(rf'([{CJK}]) +([^\s{CJK}{FEEDBACK_PUNCT_OK}]+) +(?=[{CJK}])')
+# 命令里的 shell 噪声：环境变量前缀、重定向、截取输出的管道，去掉不影响说的是哪条命令
+_SHELL_NOISE = [
+    re.compile(r'(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]+=(?:\$\([^)]*\)|\S+)\s+'),  # NODE_PATH=$(npm root -g) 前缀
+    re.compile(r'\s*\d?>\s*/dev/null'),                                       # >/dev/null
+    re.compile(r'\s*\d?>&\d'),                                                # 2>&1
+    re.compile(r'\s*\|\s*(?:tail|head)(?:\s+-n)?\s+-?\d+'),                   # | tail -3
+]
+# 数字之间的破折号或波浪号表示范围，换成「至」
+_RANGE_DASH = re.compile(r'(?<=\d)\s*[—–～]+\s*(?=\d)')
+# 两侧都是中文的斜杠表示并列，换成顿号；两侧都有空格的独立斜杠换成空格断句
+_CJK_SLASH = re.compile(rf'(?<=[{CJK}])\s*/\s*(?=[{CJK}])')
+# 独立的省略号（不连着英文或数字），如 vitest run ... 和
+_LONE_ELLIPSIS = re.compile(r'(?<![A-Za-z0-9_])\.{3}(?![A-Za-z0-9_])|…+')
 
 
 def normalize_feedback(text: str) -> str:
@@ -190,14 +227,29 @@ def normalize_feedback(text: str) -> str:
 
     三方模型验收时常忽略 style.md 的格式要求（反引号包代码、英文大写、中文引号、英文两侧加空格），
     这些都能确定性地改掉；改不掉的问题（如命令里的管道符、括号）留给自动查验拦下。
+    命令里的环境变量前缀、重定向、截取输出的管道，报错原文里的英文括号和引号，数字范围的破折号，
+    中文之间的斜杠和独立的省略号，也都按固定规则改掉；超长、禁用词等需要改写的留给模型自查和查验。
     """
     if not text:
         return text
+    s = text
+    # 先去掉 shell 噪声（大小写转换之前，环境变量前缀靠大写识别）
+    for p in _SHELL_NOISE:
+        s = p.sub('', s)
+    # 命令之间的 && 换成「和」
+    s = re.sub(r'\s*&&\s*', '和', s)
     # 反引号与中文之间的修饰空格先去掉，再去掉反引号本身
-    s = re.sub(rf'(?<=[{CJK}{FEEDBACK_PUNCT_OK}]) +(?=`)', '', text)
+    s = re.sub(rf'(?<=[{CJK}{FEEDBACK_PUNCT_OK}]) +(?=`)', '', s)
     s = re.sub(rf'(?<=`) +(?=[{CJK}{FEEDBACK_PUNCT_OK}])', '', s)
     s = _WRAP_MARKS.sub('', s)
     s = _EMPTY_CALL.sub(r'\1', s)
+    # 英文引号直接去掉，英文括号换成空格断句，如 undefined (reading 'length') 写成 undefined reading length
+    s = re.sub(r'[\'"]', '', s)
+    s = re.sub(r'[()]', ' ', s)
+    s = _RANGE_DASH.sub('至', s)
+    s = _CJK_SLASH.sub('、', s)
+    s = re.sub(r'(?<=\S) +/ +(?=\S)', ' ', s)
+    s = _LONE_ELLIPSIS.sub(' ', s)
     # 中点分隔符换成空格断句
     s = s.replace('·', ' ')
     # 英文全部小写
@@ -223,3 +275,47 @@ def _dedupe(issues: list[dict]) -> list[dict]:
             seen.add(key)
             out.append(it)
     return out
+
+
+def check_all(text: str, score=None, voice: bool = True) -> list[dict]:
+    """Feedback 的全部门禁：口吻格式、内容，验收时再加过程写法；后端查验与模型自查共用。"""
+    if not text:
+        return []
+    out = check_feedback(text) + check_feedback_content(text, score)
+    return out + check_feedback_voice(text) if voice else out
+
+
+def _cli(argv: list[str]) -> int:
+    """模型自查用：python style_check.py <feedback 文件> [分数] [--rework]
+
+    文件只放 Feedback 正文（utf-8，带不带 bom 都行）；结果同时写到同目录的 feedback-check.txt，
+    避免 Windows 终端转码把中文显示成乱码。返回 0 表示通过。
+    """
+    import pathlib
+    args = [a for a in argv if not a.startswith('--')]
+    if not args:
+        print('用法 python style_check.py <feedback 文件> [分数] [--rework]')
+        return 2
+    path = pathlib.Path(args[0])
+    score = args[1] if len(args) > 1 and args[1].isdigit() else None
+    text = path.read_text(encoding='utf-8-sig').strip()
+    issues = check_all(text, score, voice='--rework' not in argv)
+    lines = [f'字数 {len(text)}']
+    if issues:
+        lines.append(f'不通过 共{len(issues)}处 改完再查')
+        lines += [f"- {i['rule']}「{i['excerpt']}」" for i in issues]
+        fixed = normalize_feedback(text)
+        if fixed != text:
+            # 机械规整后的写法给模型参考，内容问题仍要自己改
+            lines += ['', '格式可以这样规整（只改字不改意思）', fixed]
+    else:
+        lines.append('通过')
+    out = '\n'.join(lines)
+    path.with_name('feedback-check.txt').write_text(out + '\n', encoding='utf-8')
+    print(out)
+    return 1 if issues else 0
+
+
+if __name__ == '__main__':
+    import sys
+    sys.exit(_cli(sys.argv[1:]))

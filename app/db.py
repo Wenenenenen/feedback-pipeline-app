@@ -208,6 +208,14 @@ def list_inspections(task_id: int) -> list[dict]:
         return [_decode(r, INSPECTION_JSON_FIELDS) for r in rows]
 
 
+def rework_rounds() -> dict[int, int]:
+    """每道题登记过的质检轮数（题目 ID 到轮数），列表页按「返修过的」筛选用。"""
+    with _lock:
+        rows = conn().execute('SELECT task_id, COUNT(*) FROM qa_inspection WHERE deleted = 0 '
+                              'GROUP BY task_id').fetchall()
+        return {r[0]: r[1] for r in rows}
+
+
 def open_inspection(task_id: int) -> dict | None:
     """正在返修的那条质检记录（同一时间最多一条）。"""
     with _lock:

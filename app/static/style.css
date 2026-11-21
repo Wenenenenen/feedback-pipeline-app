@@ -116,6 +116,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .toolbar select { width: auto; min-width: 128px; }
 .toolbar .spacer { flex: 1; }
 .toolbar .count { font: 12px var(--mono); color: var(--muted); }
+/* 列表与提交表的勾选筛选项：隐藏已完成、返修过的 */
+.flag-check { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; user-select: none; }
+.flag-check input { width: auto; margin: 0; }
+.flag-check:has(input:checked) { color: var(--ink); font-weight: 600; }
 
 table { width: 100%; border-collapse: collapse; }
 th {

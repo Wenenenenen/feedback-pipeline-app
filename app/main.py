@@ -120,6 +120,7 @@ def list_tasks(status: str | None = None):
     out = []
     # 按甲方序号从大到小排列，没有甲方序号的题排在最后（按创建先后倒序）
     tasks = sorted(db.list_tasks(status), key=lambda t: (not t.get('client_seq'), -client_seq_key(t), -t['id']))
+    rounds = db.rework_rounds()
     for t in tasks:
         v = P.view(t)
         out.append({k: v.get(k) for k in (
@@ -127,6 +128,8 @@ def list_tasks(status: str | None = None):
             'done_time', 'due_flag', 'update_time', 'busy', 'last_error', 'client_seq', 'client_submit_time',
             'auto_run')})
         out[-1]['auto_paused'] = bool(t.get('auto_pause'))
+        # 返修轮数：登记过几轮质检，0 表示没返修过
+        out[-1]['rework_rounds'] = rounds.get(t['id'], 0)
     return out
 
 

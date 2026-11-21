@@ -4,6 +4,7 @@ import datetime as dt
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 
 from . import (codex_runner, config, db, envcheck, feishu, gitops, jobs, materials, style_check, submission,
@@ -118,17 +119,46 @@ def due_flag(t: dict) -> str:
     return ''
 
 
-def feedback_issues(text: str, score=None) -> list[dict]:
-    """Feedback 的口吻检查加内容门禁（原分依据、代码锚点、质检会打回的表达）。"""
-    if not text:
-        return []
-    return style_check.check_feedback(text) + style_check.check_feedback_content(text, score)
+def feedback_issues(text: str, score=None, voice: bool = True) -> list[dict]:
+    """Feedback 的口吻检查加内容门禁（原分依据、代码锚点、质检会打回的表达）。
+
+    voice 为 True 时再查过程写法（不写轨迹分析口吻、不套过程上 产物上模板），只用于新验收的内容；
+    返修只按质检意见改，不因这条重写已提交的内容。
+    """
+    return style_check.check_all(text, score, voice)
+
+
+def _normalize_feedback(text: str, log) -> str:
+    """格式问题（反引号、大写、引号括号、命令里的重定向与管道、多余空格）机械规整，只改字不改意思，
+    避免逐题停在待查验；改写过就在日志里留原文。"""
+    if not text or not style_check.check_feedback(text):
+        return text
+    fixed = style_check.normalize_feedback(text)
+    if fixed != text:
+        log(f"Feedback 格式已自动规整（口吻问题 {len(style_check.check_feedback(text))} 条"
+            f"→{len(style_check.check_feedback(fixed))} 条），原文：{text}")
+    return fixed
+
+
+def feedback_check_lines(run_key: str, rework: bool = False) -> list[str]:
+    """告诉 skill 怎样用后端同一套规则自查 Feedback，输出前查到通过为止。"""
+    cfg = config.load()
+    ws = cfg['agent_workspace_win'].rstrip('\\')
+    src = config.AGENT_DIR / 'runs' / run_key / 'feedback.txt'
+    cmd = (f"wsl.exe -d {cfg['wsl_distro']} -- {sys.executable} {config.APP_DIR / 'style_check.py'} "
+           f"{src} <交付完整性分数>{' --rework' if rework else ''}")
+    return ['## Feedback 自查',
+            f'写完 Feedback 后把正文（只放 Feedback 这一段，utf-8）写入 {ws}\\runs\\{run_key}\\feedback.txt，再执行：',
+            cmd,
+            f'结果同时写在 {ws}\\runs\\{run_key}\\feedback-check.txt（用 Get-Content -Encoding utf8 读）。'
+            '显示通过才能输出 JSON；不通过就按列出的问题改 Feedback 再查，直到通过，输出的 Feedback 与最后一次查过的原文一致。', '']
 
 
 def view(t: dict) -> dict:
     """附加页面需要的派生字段。"""
     t = dict(t)
-    t['feedback_issues'] = feedback_issues(t.get('feedback'), t.get('delivery_score'))
+    # 过程写法只对待查验的新验收内容提示，已完成、返修过的题不因新规则显示问题
+    t['feedback_issues'] = feedback_issues(t.get('feedback'), t.get('delivery_score'), voice=t.get('status') == S_CHECK)
     t['record_issues'] = record_issues(t.get('record_steps'), t.get('record_prep'))
     # 轨迹要在 Windows 文件选择框里上传，页面展示 Windows 侧路径
     t['trajectory_win'] = config.unc(t['trajectory_path']) if t.get('trajectory_path') else ''
@@ -610,7 +640,8 @@ def _review_input(t: dict, verify_dir: Path, run_key: str = '预览') -> str:
         f"所属领域 {t['domain']} 子方向 {t['subdomain']} 难度 {t['difficulty']}",
         f"语言/框架（出题时预估，验收按最终产物重新填写）{t['lang_framework'] or '未填'}",
         'User Prompt 原文：', t['user_prompt'],
-        '', '## 内部验收要点', *[f'- {x}' for x in t['acceptance_points'] or []],
+        '', '## 内部验收要点（出题时自拟 只作核对线索 超出 User Prompt 原文的期望不能作为扣分依据）',
+        *[f'- {x}' for x in t['acceptance_points'] or []],
         '', '## 环境检查结果', *(env_lines or ['无']),
         '', '## 出题备注草稿', t['remark'] or '无',
         # 素材生成脚本不在产物仓库里，验收需要换参数重新生成时从这里取
@@ -623,6 +654,7 @@ def _review_input(t: dict, verify_dir: Path, run_key: str = '预览') -> str:
         trajectory.summary_text(summary),
         '', '## 产物 diff（初始快照到产物快照）', diff,
         '', '## 人工意见', t['review_comment'] or '无',
+        '', *feedback_check_lines(run_key),
     ]
     return '\n'.join(parts)
 
@@ -636,13 +668,7 @@ def start_review(task_id: int) -> str:
         gitops.fresh_clone(cfg['github_repo'], t['branch'], t['artifact_sha'], vdir, log=log)
         text = _review_input(t, vdir, run_key)
         r = codex_runner.run_skill('qa-review', text, run_key, log, stop)
-        # 格式问题（反引号、大写、中文引号、多余空格）机械规整，只改字不改意思，避免逐题停在待查验
-        if style_check.check_feedback(r['feedback']):
-            fixed = style_check.normalize_feedback(r['feedback'])
-            if fixed != r['feedback']:
-                log(f"Feedback 格式已自动规整（口吻问题 {len(style_check.check_feedback(r['feedback']))} 条"
-                    f"→{len(style_check.check_feedback(fixed))} 条），原文：{r['feedback']}")
-                r['feedback'] = fixed
+        r['feedback'] = _normalize_feedback(r['feedback'], log)
         issues = feedback_issues(r['feedback'], r['delivery_score'])
         log(f"评分 {r['delivery_score']} 口吻与内容问题 {len(issues)} 条 "
             f"录屏步骤问题 {len(record_issues(r['record_steps'], r.get('record_prep')))} 条 "
@@ -894,7 +920,8 @@ def _rework_input(t: dict, insp: dict, verify_dir: Path, fix_dir: Path, repo_dir
         f"所属领域 {t['domain']} 子方向 {t['subdomain']} 难度 {t['difficulty']}",
         f"语言/框架 {t['lang_framework']}",
         'User Prompt 原文：', t['user_prompt'],
-        '', '## 内部验收要点', *[f'- {x}' for x in t['acceptance_points'] or []],
+        '', '## 内部验收要点（出题时自拟 只作核对线索 超出 User Prompt 原文的期望不能作为扣分依据）',
+        *[f'- {x}' for x in t['acceptance_points'] or []],
         '', f"## 本次质检（第{insp['round']}轮）", insp['raw_text'],
         '', '## 历次质检', *([y for x in history for y in _inspection_text(x)] or ['无']),
         '', '## 当前提交的内容', *_snapshot_lines(snap),
@@ -918,6 +945,7 @@ def _rework_input(t: dict, insp: dict, verify_dir: Path, fix_dir: Path, repo_dir
         f"WSL 路径 {t['trajectory_path']}（质检说的第N行指这个 jsonl 文件的物理行号）",
         f"SessionID {t['session_id']} 「继续」次数 {t['continue_count']}",
         trajectory.summary_text(summary),
+        '', *feedback_check_lines(run_key, rework=True),
     ]
     return '\n'.join(parts)
 
@@ -947,7 +975,8 @@ def start_rework(task_id: int) -> str:
         text = _rework_input(t, insp, vdir, fdir, vdir, run_key)
         r = codex_runner.run_skill('qa-rework', text, run_key, log, stop)
         log(f"处理说明 {r['summary']}")
-        issues = feedback_issues(r['feedback'], r['delivery_score'])
+        r['feedback'] = _normalize_feedback(r['feedback'], log)
+        issues = feedback_issues(r['feedback'], r['delivery_score'], voice=False)
         if issues:
             raise ActionError(f'返修后的 Feedback 规则检查有 {len(issues)} 处问题：' +
                               '；'.join(f"{i['rule']}「{i['excerpt']}」" for i in issues[:5]))
